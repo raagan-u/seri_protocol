@@ -1,9 +1,9 @@
 use anchor_lang::prelude::*;
 
-declare_id!("AM817BiyR3TYbceKp7XeLkn9HfUzvdoLAXLZxw7sZM7D");
+declare_id!("CCA1111111111111111111111111111111111111111");
 
 #[program]
-pub mod contracts {
+pub mod continuous_clearing_auction {
     use super::*;
 
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
