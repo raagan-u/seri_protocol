@@ -6,7 +6,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-continuous_clearing_auction = "CCA1111111111111111111111111111111111111111"
+continuous_clearing_auction = "vZ6194M81Y4CsuQ43y5kShFu4udkjY3UekVnMKYAySm"
 
 [registry]
 url = "https://api.apr.dev"
