@@ -464,8 +464,8 @@ describe("continuous_clearing_auction", () => {
     let bidderCurrencyAccount: PublicKey;
     let bidderTokenAccount: PublicKey;
 
-    const bidAmount = 500;
-    const bidPrice = new BN(2000); // above floor of 1000
+    const bidAmount = 6000; // headroom above requiredCurrencyRaised (5000) to absorb effective_amount rounding
+    const bidPrice = new BN(10).shln(64); // 10.0 in Q64, above expected clearing ~5.0
 
     before(async () => {
       // Airdrop to bidder
@@ -672,6 +672,22 @@ describe("continuous_clearing_auction", () => {
         "Last checkpointed time:",
         auctionAfter.lastCheckpointedTime.toNumber()
       );
+      console.log("Auction clearingPrice:", auctionAfter.clearingPrice.toString());
+
+      const finalCp = await program.account.checkpoint.fetch(newCheckpointPDA);
+      console.log("Final checkpoint clearingPrice:", finalCp.clearingPrice.toString());
+      console.log("Final checkpoint cumulativeMps:", finalCp.cumulativeMps.toString());
+      console.log("Final checkpoint cumulativeMpsPerPrice:", finalCp.cumulativeMpsPerPrice.toString());
+
+      const startCp = await program.account.checkpoint.fetch(latestCheckpointPDA);
+      console.log("Start checkpoint clearingPrice:", startCp.clearingPrice.toString());
+      console.log("Start checkpoint cumulativeMps:", startCp.cumulativeMps.toString());
+      console.log("Start checkpoint cumulativeMpsPerPrice:", startCp.cumulativeMpsPerPrice.toString());
+
+      const bidAcc = await program.account.bid.fetch(findBidPDA(auctionPDA, 0)[0]);
+      console.log("Bid maxPrice:", bidAcc.maxPrice.toString());
+      console.log("Bid amountQ64:", bidAcc.amountQ64.toString());
+      console.log("Bid startCumulativeMps:", bidAcc.startCumulativeMps.toString());
     });
 
     it("exits a bid after auction ends", async () => {

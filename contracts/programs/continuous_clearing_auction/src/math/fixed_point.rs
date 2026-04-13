@@ -48,37 +48,34 @@ fn wide_mul(a: u128, b: u128) -> (u128, u128) {
 }
 
 /// Divide a 256-bit number (hi, lo) by divisor, returning a u128 result.
-/// Panics/errors if the result doesn't fit in u128.
+/// Errors if the result doesn't fit in u128.
 fn wide_div(hi: u128, lo: u128, divisor: u128) -> Result<u128> {
+    require!(divisor != 0, CCAError::MathOverflow);
     if hi == 0 {
-        // Simple case: fits in u128
         return Ok(lo / divisor);
     }
-    // Result must fit in u128, so hi must be < divisor
+    // Result must fit in u128, so hi must be < divisor.
     require!(hi < divisor, CCAError::MathOverflow);
 
-    // Long division: compute (hi * 2^128 + lo) / divisor
-    // We do this in 64-bit chunks
-    let d = divisor;
-    // Split hi into two 64-bit pieces
-    let _hi_hi = hi >> 64;
-    let _hi_lo = hi & (u64::MAX as u128);
-
-    // Step 1: (hi_hi * 2^64) / d — but we need to track remainder
-    // Use a simple iterative approach for correctness
-    // Since result fits in u128, we can use trial subtraction on 192-bit numbers
-    // Simplified: use u128 with the knowledge that hi < d
-    let mut remainder = hi;
-    let mut result: u128 = 0;
-
-    // Process lo in two 64-bit halves
-    for shift in [64u32, 0u32] {
-        remainder <<= 64;
-        remainder |= (lo >> shift) & (u64::MAX as u128);
-        let q = remainder / d;
-        remainder %= d;
-        result = (result << 64) | q;
+    // Bit-by-bit shift-subtract long division. The conceptual remainder is up
+    // to 129 bits wide after each shift; we track the overflow bit explicitly
+    // so the u128 `rem` only ever holds the low 128 bits.
+    let mut rem = hi;
+    let mut quot: u128 = 0;
+    for i in (0..128).rev() {
+        let bit = (lo >> i) & 1;
+        let high_bit = rem >> 127;
+        rem = (rem << 1) | bit;
+        // If high_bit is set, the conceptual remainder is rem + 2^128, which
+        // is necessarily >= divisor (since divisor < 2^128). Otherwise compare
+        // directly. wrapping_sub recovers the correct low 128 bits in either
+        // case.
+        if high_bit == 1 || rem >= divisor {
+            rem = rem.wrapping_sub(divisor);
+            quot = (quot << 1) | 1;
+        } else {
+            quot <<= 1;
+        }
     }
-
-    Ok(result)
+    Ok(quot)
 }

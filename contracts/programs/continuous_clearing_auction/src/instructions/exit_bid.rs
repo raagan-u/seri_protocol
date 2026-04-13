@@ -83,19 +83,18 @@ pub fn handler(ctx: Context<ExitBid>) -> Result<()> {
                 .saturating_sub(start_cp.cumulative_mps_per_price);
             let mps_remaining = (MPS - bid.start_cumulative_mps) as u128;
 
-            let denominator = Q64
-                .checked_mul(mps_remaining)
-                .ok_or(error!(CCAError::MathOverflow))?;
+            // currency_spent in Q64 units: amount_q64 * (mps_delta / mps_remaining)
+            let currency_spent_q64 =
+                mul_div_round_up(bid.amount_q64, mps_delta, mps_remaining)?;
 
-            let currency_spent =
-                mul_div_round_up(bid.amount_q64, mps_delta, denominator)?;
-
-            let tokens_denom = denominator
-                .checked_mul(MPS as u128)
+            // cumulative_mps_per_price is scaled by 2^96, so the token formula
+            // is amount_q64 * mps_per_price_delta / (mps_remaining * 2^96).
+            let tokens_denom = mps_remaining
+                .checked_mul(1u128 << 96)
                 .ok_or(error!(CCAError::MathOverflow))?;
             let tokens = mul_div(bid.amount_q64, mps_per_price_delta, tokens_denom)?;
 
-            let refund_q64 = saturating_sub(bid.amount_q64, currency_spent);
+            let refund_q64 = saturating_sub(bid.amount_q64, currency_spent_q64);
             ((tokens as u64), (refund_q64 >> 64) as u64)
         }
     };
