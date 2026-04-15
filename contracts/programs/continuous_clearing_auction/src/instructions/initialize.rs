@@ -30,7 +30,7 @@ pub struct InitializeAuction<'info> {
     #[account(
         init,
         payer = creator,
-        space = Auction::SIZE,
+        space = Auction::INIT_SPACE,
         seeds = [b"auction", token_mint.key().as_ref(), creator.key().as_ref()],
         bump,
     )]
@@ -84,7 +84,7 @@ pub struct InitializeAuction<'info> {
     #[account(
         init,
         payer = creator,
-        space = Checkpoint::SIZE,
+        space = Checkpoint::INIT_SPACE,
         seeds = [b"checkpoint", auction.key().as_ref(), &params.start_time.to_le_bytes()],
         bump,
     )]

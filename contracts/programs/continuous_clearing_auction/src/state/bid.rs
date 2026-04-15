@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 use crate::math::constants::MPS;
 
 #[account]
+#[derive(InitSpace)]
 pub struct Bid {
     pub auction: Pubkey,
     pub bid_id: u64,
@@ -16,17 +17,6 @@ pub struct Bid {
 }
 
 impl Bid {
-    pub const SIZE: usize = 8   // discriminator
-        + 32                    // auction
-        + 8                     // bid_id
-        + 32                    // owner
-        + 16 * 2                // max_price, amount_q64
-        + 8                     // start_time
-        + 4                     // start_cumulative_mps
-        + 8                     // exited_time
-        + 8                     // tokens_filled
-        + 1;                    // bump
-
     /// Effective currency amount, scaled by remaining fill percentage.
     pub fn effective_amount(&self) -> u128 {
         let remaining = (MPS - self.start_cumulative_mps) as u128;

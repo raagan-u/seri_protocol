@@ -35,7 +35,7 @@ pub struct CheckpointAccounts<'info> {
     #[account(
         init_if_needed,
         payer = payer,
-        space = CheckpointState::SIZE,
+        space = CheckpointState::INIT_SPACE,
         seeds = [b"checkpoint", auction.key().as_ref(), &params.now.to_le_bytes()],
         bump,
     )]

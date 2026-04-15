@@ -31,7 +31,7 @@ pub struct SubmitBid<'info> {
     #[account(
         init,
         payer = bidder,
-        space = Bid::SIZE,
+        space = Bid::INIT_SPACE,
         seeds = [b"bid", auction.key().as_ref(), &auction.next_bid_id.to_le_bytes()],
         bump,
     )]
@@ -64,7 +64,7 @@ pub struct SubmitBid<'info> {
     #[account(
         init_if_needed,
         payer = bidder,
-        space = Checkpoint::SIZE,
+        space = Checkpoint::INIT_SPACE,
         seeds = [b"checkpoint", auction.key().as_ref(), &params.now.to_le_bytes()],
         bump,
     )]
