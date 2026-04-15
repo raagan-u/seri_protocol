@@ -1,7 +1,5 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
-use anchor_lang::solana_program;
-
 use crate::errors::CCAError;
 use crate::math::constants::*;
 use crate::state::*;
@@ -50,7 +48,7 @@ pub struct InitializeAuction<'info> {
     #[account(
         init,
         payer = creator,
-        space = Tick::SIZE,
+        space = Tick::INIT_SPACE,
         seeds = [b"tick", auction.key().as_ref(), &params.floor_price.to_le_bytes()],
         bump,
     )]

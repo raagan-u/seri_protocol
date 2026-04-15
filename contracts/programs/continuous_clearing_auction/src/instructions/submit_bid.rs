@@ -40,7 +40,7 @@ pub struct SubmitBid<'info> {
     #[account(
         init_if_needed,
         payer = bidder,
-        space = Tick::SIZE,
+        space = Tick::INIT_SPACE,
         seeds = [b"tick", auction.key().as_ref(), &params.max_price.to_le_bytes()],
         bump,
     )]

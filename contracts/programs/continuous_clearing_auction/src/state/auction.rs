@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 use crate::math::constants::MPS;
 
 #[account]
+#[derive(InitSpace)]
 pub struct Auction {
     // Config (immutable after init)
     pub token_mint: Pubkey,
@@ -36,20 +37,6 @@ pub struct Auction {
 }
 
 impl Auction {
-    pub const SIZE: usize = 8   // discriminator
-        + 32 * 7                // 7 Pubkeys
-        + 8                     // total_supply
-        + 8 * 3                 // start/end/claim_time
-        + 8                     // tick_spacing
-        + 16 * 4                // floor_price, max_bid_price, clearing_price, sum_currency_demand
-        + 16                    // next_active_tick_price
-        + 8                     // next_bid_id
-        + 8                     // last_checkpointed_time
-        + 16 * 2                // currency_raised_q64_x7, total_cleared_q64_x7
-        + 8                     // required_currency_raised
-        + 1 * 4                 // 4 bools
-        + 1;                    // bump
-
     pub fn is_graduated(&self) -> bool {
         let currency_raised = (self.currency_raised_q64_x7 / (MPS as u128)) >> 64;
         currency_raised >= self.required_currency_raised as u128
