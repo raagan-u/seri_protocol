@@ -35,7 +35,7 @@ pub struct CheckpointAccounts<'info> {
     #[account(
         init_if_needed,
         payer = payer,
-        space = CheckpointState::INIT_SPACE,
+        space = 8 + CheckpointState::INIT_SPACE,
         seeds = [b"checkpoint", auction.key().as_ref(), &params.now.to_le_bytes()],
         bump,
     )]
@@ -50,7 +50,7 @@ pub struct CheckpointAccounts<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
-pub fn handler(ctx: Context<CheckpointAccounts>, params: CheckpointParams) -> Result<()> {
+pub fn handle_checkpoint(ctx: Context<CheckpointAccounts>, params: CheckpointParams) -> Result<()> {
     let clock = Clock::get()?;
     let now = params.now;
     let auction = &ctx.accounts.auction;

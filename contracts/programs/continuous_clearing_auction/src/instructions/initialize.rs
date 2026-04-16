@@ -30,7 +30,7 @@ pub struct InitializeAuction<'info> {
     #[account(
         init,
         payer = creator,
-        space = Auction::INIT_SPACE,
+        space = 8 + Auction::INIT_SPACE,
         seeds = [b"auction", token_mint.key().as_ref(), creator.key().as_ref()],
         bump,
     )]
@@ -48,7 +48,7 @@ pub struct InitializeAuction<'info> {
     #[account(
         init,
         payer = creator,
-        space = Tick::INIT_SPACE,
+        space = 8 + Tick::INIT_SPACE,
         seeds = [b"tick", auction.key().as_ref(), &params.floor_price.to_le_bytes()],
         bump,
     )]
@@ -84,7 +84,7 @@ pub struct InitializeAuction<'info> {
     #[account(
         init,
         payer = creator,
-        space = Checkpoint::INIT_SPACE,
+        space = 8 + Checkpoint::INIT_SPACE,
         seeds = [b"checkpoint", auction.key().as_ref(), &params.start_time.to_le_bytes()],
         bump,
     )]
@@ -95,7 +95,7 @@ pub struct InitializeAuction<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
-pub fn handler(ctx: Context<InitializeAuction>, params: InitializeAuctionParams) -> Result<()> {
+pub fn handle_initialize_auction(ctx: Context<InitializeAuction>, params: InitializeAuctionParams) -> Result<()> {
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
 

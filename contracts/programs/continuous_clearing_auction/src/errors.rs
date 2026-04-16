@@ -42,4 +42,12 @@ pub enum CCAError {
     NoTokensToClaim,
     #[msg("Cannot exit bid")]
     CannotExitBid,
+    #[msg("Cannot partially exit bid before graduation")]
+    CannotPartiallyExitBidBeforeGraduation,
+    #[msg("Cannot partially exit bid before auction ends")]
+    CannotPartiallyExitBidBeforeEndBlock,
+    #[msg("Invalid last fully filled checkpoint hint")]
+    InvalidLastFullyFilledCheckpointHint,
+    #[msg("Invalid outbid checkpoint hint")]
+    InvalidOutbidCheckpointHint,
 }

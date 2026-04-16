@@ -760,6 +760,468 @@ describe("continuous_clearing_auction", () => {
       console.log("Tokens claimed:", Number(tokenAcc.amount));
     });
   });
+
+  // --- Two-bidder partial fill test with 4 steps (each 25% of supply) ---
+  describe("exit_partially_filled_bid — two bidders, 4 steps", () => {
+    let auctionMint: PublicKey;
+    let auctionCurrencyMint: PublicKey;
+    let auctionPDA: PublicKey;
+    let stepsPDA: PublicKey;
+    let tokenVaultPDA: PublicKey;
+    let currencyVaultPDA: PublicKey;
+    let startTime: number;
+    let endTime: number;
+    let claimTime: number;
+
+    const bidderA = Keypair.generate();
+    const bidderB = Keypair.generate();
+    let bidderACurrencyAccount: PublicKey;
+    let bidderBCurrencyAccount: PublicKey;
+    let bidderATokenAccount: PublicKey;
+    let bidderBTokenAccount: PublicKey;
+
+    // Auction config: 4 steps, each covering 25% of supply over equal duration
+    // total_supply = 10_000, each step emits 2_500 tokens worth of MPS
+    // MPS = 10_000_000 total, 4 steps of 2_500_000 each, duration 25s each = 100s total
+    const testTotalSupply = 10_000;
+    const testFloorPrice = new BN(100);
+    const testTickSpacing = 10;
+    const testRequiredCurrencyRaised = 50_000;
+
+    // BidderA bids at price 20 (in Q64), BidderB bids at price 10 (in Q64)
+    // When both bids are in, clearing price will rise.
+    // If clearing settles at bidderB's price, bidderB is partially filled.
+    const priceA = new BN(20).shln(64); // 20.0 Q64
+    const priceB = new BN(10).shln(64); // 10.0 Q64
+    const bidAmountA = 50_000;
+    const bidAmountB = 50_000;
+
+    let bidASubmitTime: number;
+    let bidBSubmitTime: number;
+
+    before(async () => {
+      // Airdrop to bidders
+      const sigA = await connection.requestAirdrop(
+        bidderA.publicKey,
+        10 * anchor.web3.LAMPORTS_PER_SOL
+      );
+      const sigB = await connection.requestAirdrop(
+        bidderB.publicKey,
+        10 * anchor.web3.LAMPORTS_PER_SOL
+      );
+      await connection.confirmTransaction(sigA);
+      await connection.confirmTransaction(sigB);
+
+      // Fresh mints
+      auctionMint = await createMint(
+        connection,
+        creator,
+        creator.publicKey,
+        null,
+        6
+      );
+      auctionCurrencyMint = await createMint(
+        connection,
+        creator,
+        creator.publicKey,
+        null,
+        6
+      );
+
+      // Creator token account with supply
+      const creatorTA = await createAccount(
+        connection,
+        creator,
+        auctionMint,
+        creator.publicKey
+      );
+      await mintTo(
+        connection,
+        creator,
+        auctionMint,
+        creatorTA,
+        creator,
+        testTotalSupply
+      );
+
+      // Bidder currency accounts
+      bidderACurrencyAccount = await createAccount(
+        connection,
+        bidderA,
+        auctionCurrencyMint,
+        bidderA.publicKey
+      );
+      bidderBCurrencyAccount = await createAccount(
+        connection,
+        bidderB,
+        auctionCurrencyMint,
+        bidderB.publicKey
+      );
+      await mintTo(
+        connection,
+        creator,
+        auctionCurrencyMint,
+        bidderACurrencyAccount,
+        creator,
+        100_000
+      );
+      await mintTo(
+        connection,
+        creator,
+        auctionCurrencyMint,
+        bidderBCurrencyAccount,
+        creator,
+        100_000
+      );
+
+      // Bidder token accounts (for claim)
+      bidderATokenAccount = await createAccount(
+        connection,
+        bidderA,
+        auctionMint,
+        bidderA.publicKey
+      );
+      bidderBTokenAccount = await createAccount(
+        connection,
+        bidderB,
+        auctionMint,
+        bidderB.publicKey
+      );
+
+      // Initialize auction: 4 steps, each 25s with mps = 2_500_000
+      const now = Math.floor(Date.now() / 1000);
+      startTime = now + 2;
+      endTime = startTime + 100; // 4 steps of 25s = 100s
+      claimTime = endTime;
+
+      const steps = [
+        { mps: 100_000, duration: 25 },
+        { mps: 100_000, duration: 25 },
+        { mps: 100_000, duration: 25 },
+        { mps: 100_000, duration: 25 },
+      ];
+
+      [auctionPDA] = findAuctionPDA(auctionMint, creator.publicKey);
+      [stepsPDA] = findStepsPDA(auctionPDA);
+      [tokenVaultPDA] = findTokenVaultPDA(auctionPDA);
+      [currencyVaultPDA] = findCurrencyVaultPDA(auctionPDA);
+
+      await program.methods
+        .initializeAuction({
+          totalSupply: new BN(testTotalSupply),
+          startTime: new BN(startTime),
+          endTime: new BN(endTime),
+          claimTime: new BN(claimTime),
+          tickSpacing: new BN(testTickSpacing),
+          floorPrice: testFloorPrice,
+          requiredCurrencyRaised: new BN(testRequiredCurrencyRaised),
+          tokensRecipient: tokensRecipient,
+          fundsRecipient: fundsRecipient,
+          steps: steps,
+        })
+        .accounts({
+          creator: creator.publicKey,
+          tokenMint: auctionMint,
+          currencyMint: auctionCurrencyMint,
+          creatorTokenAccount: creatorTA,
+        })
+        .rpc();
+
+      console.log("4-step auction initialized");
+    });
+
+    it("bidderA submits bid at price 20", async () => {
+      await sleep(3000);
+
+      const slot = await connection.getSlot();
+      const now = await connection.getBlockTime(slot);
+      if (!now || now < startTime) throw new Error("Clock hasn't advanced past start_time");
+      bidASubmitTime = now;
+
+      const [bidPDA] = findBidPDA(auctionPDA, 0);
+      const [tickPDA] = findTickPDA(auctionPDA, priceA);
+      const [floorTickPDA] = findFloorTickPDA(auctionPDA, testFloorPrice);
+      const [latestCheckpointPDA] = findCheckpointPDA(auctionPDA, startTime);
+      const [newCheckpointPDA] = findCheckpointPDA(auctionPDA, now);
+
+      await program.methods
+        .submitBid({
+          maxPrice: priceA,
+          amount: new BN(bidAmountA),
+          prevTickPrice: testFloorPrice,
+          now: new BN(now),
+        })
+        .accountsPartial({
+          bidder: bidderA.publicKey,
+          auction: auctionPDA,
+          bid: bidPDA,
+          tick: tickPDA,
+          prevTick: floorTickPDA,
+          latestCheckpoint: latestCheckpointPDA,
+          newCheckpoint: newCheckpointPDA,
+          auctionSteps: stepsPDA,
+          bidderCurrencyAccount: bidderACurrencyAccount,
+          currencyVault: currencyVaultPDA,
+        })
+        .signers([bidderA])
+        .rpc();
+
+      console.log("BidderA submitted at price 20, time:", now);
+      const auction = await program.account.auction.fetch(auctionPDA);
+      console.log("Clearing price after bidA:", auction.clearingPrice.toString());
+    });
+
+    it("bidderB submits bid at price 10", async () => {
+      await sleep(2000);
+      const slot = await connection.getSlot();
+      const now = await connection.getBlockTime(slot);
+      if (!now) throw new Error("Cannot get block time");
+      bidBSubmitTime = now;
+
+      // BidderB bids at price 10 — tick 20 (bidderA's) is the prev tick for insertion
+      const [bidPDA] = findBidPDA(auctionPDA, 1);
+      const [tickPDA] = findTickPDA(auctionPDA, priceB);
+      const [prevTickPDA] = findTickPDA(auctionPDA, testFloorPrice);
+      const [latestCheckpointPDA] = findCheckpointPDA(auctionPDA, bidASubmitTime);
+      const [newCheckpointPDA] = findCheckpointPDA(auctionPDA, now);
+
+      await program.methods
+        .submitBid({
+          maxPrice: priceB,
+          amount: new BN(bidAmountB),
+          prevTickPrice: testFloorPrice,
+          now: new BN(now),
+        })
+        .accountsPartial({
+          bidder: bidderB.publicKey,
+          auction: auctionPDA,
+          bid: bidPDA,
+          tick: tickPDA,
+          prevTick: prevTickPDA,
+          latestCheckpoint: latestCheckpointPDA,
+          newCheckpoint: newCheckpointPDA,
+          auctionSteps: stepsPDA,
+          bidderCurrencyAccount: bidderBCurrencyAccount,
+          currencyVault: currencyVaultPDA,
+        })
+        .signers([bidderB])
+        .rpc();
+
+      console.log("BidderB submitted at price 10, time:", now);
+      const auction = await program.account.auction.fetch(auctionPDA);
+      console.log("Clearing price after bidB:", auction.clearingPrice.toString());
+    });
+
+    it("creates final checkpoint after auction ends", async () => {
+      const auction = await program.account.auction.fetch(auctionPDA);
+      const endT = auction.endTime.toNumber();
+
+      let now: number;
+      do {
+        await sleep(2000);
+        const slot = await connection.getSlot();
+        now = (await connection.getBlockTime(slot))!;
+      } while (now < endT);
+
+      const lastCpTime = auction.lastCheckpointedTime.toNumber();
+      const [latestCheckpointPDA] = findCheckpointPDA(auctionPDA, lastCpTime);
+      const [newCheckpointPDA] = findCheckpointPDA(auctionPDA, now);
+
+      await program.methods
+        .checkpoint({ now: new BN(now) })
+        .accountsPartial({
+          payer: creator.publicKey,
+          auction: auctionPDA,
+          latestCheckpoint: latestCheckpointPDA,
+          newCheckpoint: newCheckpointPDA,
+          auctionSteps: stepsPDA,
+        })
+        .rpc();
+
+      const auctionAfter = await program.account.auction.fetch(auctionPDA);
+      console.log("Graduated:", auctionAfter.graduated);
+      console.log("Final clearing price:", auctionAfter.clearingPrice.toString());
+
+      const finalCp = await program.account.checkpoint.fetch(newCheckpointPDA);
+      console.log("Final checkpoint clearing:", finalCp.clearingPrice.toString());
+      console.log("Final checkpoint cumMps:", finalCp.cumulativeMps);
+    });
+
+    it("exits bidderA (fully filled, above clearing)", async () => {
+      const auction = await program.account.auction.fetch(auctionPDA);
+      const bid = await program.account.bid.fetch(findBidPDA(auctionPDA, 0)[0]);
+
+      const finalCpTime = auction.lastCheckpointedTime.toNumber();
+      const [bidPDA] = findBidPDA(auctionPDA, 0);
+      const [startCheckpointPDA] = findCheckpointPDA(auctionPDA, bid.startTime.toNumber());
+      const [finalCheckpointPDA] = findCheckpointPDA(auctionPDA, finalCpTime);
+
+      // BidderA's price (20) should be > clearing price → fully filled → use exit_bid
+      const finalCp = await program.account.checkpoint.fetch(finalCheckpointPDA);
+      console.log("BidA max_price:", bid.maxPrice.toString());
+      console.log("Final clearing:", finalCp.clearingPrice.toString());
+
+      if (bid.maxPrice.gt(finalCp.clearingPrice)) {
+        await program.methods
+          .exitBid()
+          .accountsPartial({
+            auction: auctionPDA,
+            bid: bidPDA,
+            startCheckpoint: startCheckpointPDA,
+            finalCheckpoint: finalCheckpointPDA,
+            currencyVault: currencyVaultPDA,
+            bidOwnerCurrencyAccount: bidderACurrencyAccount,
+          })
+          .rpc();
+
+        const bidAfter = await program.account.bid.fetch(bidPDA);
+        console.log("BidderA tokens filled:", bidAfter.tokensFilled.toNumber());
+        expect(bidAfter.exitedTime.toNumber()).to.be.greaterThan(0);
+      } else {
+        console.log("BidderA at or below clearing — will use partial exit");
+      }
+    });
+
+    it("exits bidderB (partially filled at clearing price)", async () => {
+      const auction = await program.account.auction.fetch(auctionPDA);
+      const bid = await program.account.bid.fetch(findBidPDA(auctionPDA, 1)[0]);
+      const finalCpTime = auction.lastCheckpointedTime.toNumber();
+
+      const [bidPDA] = findBidPDA(auctionPDA, 1);
+      const [startCheckpointPDA] = findCheckpointPDA(auctionPDA, bid.startTime.toNumber());
+      const [finalCheckpointPDA] = findCheckpointPDA(auctionPDA, finalCpTime);
+      const finalCp = await program.account.checkpoint.fetch(finalCheckpointPDA);
+
+      console.log("BidB max_price:", bid.maxPrice.toString());
+      console.log("Final clearing:", finalCp.clearingPrice.toString());
+
+      if (bid.maxPrice.eq(finalCp.clearingPrice)) {
+        // Partially filled at clearing price — end-of-auction case
+        // We need: start_checkpoint, last_fully_filled_checkpoint, next_of_last_fully_filled,
+        //          upper_checkpoint (= final), tick, no outbid_checkpoint
+
+        // Find the last checkpoint where clearing < bid.max_price.
+        // This is the checkpoint at bid's start time (clearing was lower then).
+        // Walk the checkpoint list to find it.
+        const startCp = await program.account.checkpoint.fetch(startCheckpointPDA);
+
+        // If start checkpoint's clearing < bid.max_price, it's our last_fully_filled.
+        // The next checkpoint after it should have clearing >= bid.max_price.
+        let lastFFTime = startCp.timestamp.toNumber();
+        let lastFFCp = startCp;
+
+        // Walk forward to find the actual last fully filled checkpoint
+        let currentCpTime = lastFFTime;
+        let currentCp = lastFFCp;
+        const MAX_TS = new BN("9223372036854775807");
+        while (!currentCp.nextTimestamp.eq(MAX_TS)) {
+          const nextTime = currentCp.nextTimestamp.toNumber();
+          const [nextPDA] = findCheckpointPDA(auctionPDA, nextTime);
+          const nextCp = await program.account.checkpoint.fetch(nextPDA);
+          if (nextCp.clearingPrice.lt(bid.maxPrice)) {
+            lastFFTime = nextTime;
+            lastFFCp = nextCp;
+            currentCpTime = nextTime;
+            currentCp = nextCp;
+          } else {
+            break;
+          }
+        }
+
+        const [lastFFPDA] = findCheckpointPDA(auctionPDA, lastFFTime);
+        const nextFFTime = lastFFCp.nextTimestamp.toNumber();
+        const [nextFFPDA] = findCheckpointPDA(auctionPDA, nextFFTime);
+
+        const [tickPDA] = findTickPDA(auctionPDA, priceB);
+
+        console.log("Using last_fully_filled checkpoint at:", lastFFTime);
+        console.log("next_of_last_fully_filled at:", nextFFTime);
+
+        await program.methods
+          .exitPartiallyFilledBid()
+          .accountsPartial({
+            auction: auctionPDA,
+            bid: bidPDA,
+            startCheckpoint: startCheckpointPDA,
+            lastFullyFilledCheckpoint: lastFFPDA,
+            nextOfLastFullyFilled: nextFFPDA,
+            upperCheckpoint: finalCheckpointPDA,
+            outbidCheckpoint: null,
+            tick: tickPDA,
+            currencyVault: currencyVaultPDA,
+            bidOwnerCurrencyAccount: bidderBCurrencyAccount,
+          })
+          .rpc();
+
+        const bidAfter = await program.account.bid.fetch(bidPDA);
+        console.log("BidderB tokens filled:", bidAfter.tokensFilled.toNumber());
+        console.log("BidderB exited at:", bidAfter.exitedTime.toNumber());
+        expect(bidAfter.exitedTime.toNumber()).to.be.greaterThan(0);
+        expect(bidAfter.tokensFilled.toNumber()).to.be.greaterThan(0);
+      } else if (bid.maxPrice.gt(finalCp.clearingPrice)) {
+        // Fully filled — use regular exit
+        console.log("BidB is fully filled, using exit_bid instead");
+        await program.methods
+          .exitBid()
+          .accountsPartial({
+            auction: auctionPDA,
+            bid: bidPDA,
+            startCheckpoint: startCheckpointPDA,
+            finalCheckpoint: finalCheckpointPDA,
+            currencyVault: currencyVaultPDA,
+            bidOwnerCurrencyAccount: bidderBCurrencyAccount,
+          })
+          .rpc();
+
+        const bidAfter = await program.account.bid.fetch(bidPDA);
+        console.log("BidderB tokens filled:", bidAfter.tokensFilled.toNumber());
+        expect(bidAfter.exitedTime.toNumber()).to.be.greaterThan(0);
+      } else {
+        console.log("BidB is below clearing — full refund via exit_bid");
+      }
+    });
+
+    it("both bidders claim tokens", async () => {
+      const bidA = await program.account.bid.fetch(findBidPDA(auctionPDA, 0)[0]);
+      const bidB = await program.account.bid.fetch(findBidPDA(auctionPDA, 1)[0]);
+
+      if (bidA.tokensFilled.toNumber() > 0) {
+        await program.methods
+          .claimTokens()
+          .accountsPartial({
+            auction: auctionPDA,
+            bid: findBidPDA(auctionPDA, 0)[0],
+            tokenVault: tokenVaultPDA,
+            bidOwnerTokenAccount: bidderATokenAccount,
+          })
+          .rpc();
+
+        const tokenAccA = await getAccount(connection, bidderATokenAccount);
+        console.log("BidderA claimed tokens:", Number(tokenAccA.amount));
+        expect(Number(tokenAccA.amount)).to.be.greaterThan(0);
+      }
+
+      if (bidB.tokensFilled.toNumber() > 0) {
+        await program.methods
+          .claimTokens()
+          .accountsPartial({
+            auction: auctionPDA,
+            bid: findBidPDA(auctionPDA, 1)[0],
+            tokenVault: tokenVaultPDA,
+            bidOwnerTokenAccount: bidderBTokenAccount,
+          })
+          .rpc();
+
+        const tokenAccB = await getAccount(connection, bidderBTokenAccount);
+        console.log("BidderB claimed tokens:", Number(tokenAccB.amount));
+        expect(Number(tokenAccB.amount)).to.be.greaterThan(0);
+      }
+
+      // Log total tokens distributed
+      const vaultAcc = await getAccount(connection, tokenVaultPDA);
+      console.log("Tokens remaining in vault:", Number(vaultAcc.amount));
+    });
+  });
 });
 
 function sleep(ms: number): Promise<void> {

@@ -50,7 +50,7 @@ pub struct ExitBid<'info> {
     pub token_program: Program<'info, Token>,
 }
 
-pub fn handler(ctx: Context<ExitBid>) -> Result<()> {
+pub fn handle_exit_bid(ctx: Context<ExitBid>) -> Result<()> {
     let auction = &ctx.accounts.auction;
     let bid = &mut ctx.accounts.bid;
 

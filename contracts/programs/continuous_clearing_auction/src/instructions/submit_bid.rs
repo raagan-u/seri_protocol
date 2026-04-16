@@ -31,7 +31,7 @@ pub struct SubmitBid<'info> {
     #[account(
         init,
         payer = bidder,
-        space = Bid::INIT_SPACE,
+        space = 8 + Bid::INIT_SPACE,
         seeds = [b"bid", auction.key().as_ref(), &auction.next_bid_id.to_le_bytes()],
         bump,
     )]
@@ -40,7 +40,7 @@ pub struct SubmitBid<'info> {
     #[account(
         init_if_needed,
         payer = bidder,
-        space = Tick::INIT_SPACE,
+        space = 8 + Tick::INIT_SPACE,
         seeds = [b"tick", auction.key().as_ref(), &params.max_price.to_le_bytes()],
         bump,
     )]
@@ -64,7 +64,7 @@ pub struct SubmitBid<'info> {
     #[account(
         init_if_needed,
         payer = bidder,
-        space = Checkpoint::INIT_SPACE,
+        space = 8 + Checkpoint::INIT_SPACE,
         seeds = [b"checkpoint", auction.key().as_ref(), &params.now.to_le_bytes()],
         bump,
     )]
@@ -93,7 +93,7 @@ pub struct SubmitBid<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
-pub fn handler(ctx: Context<SubmitBid>, params: SubmitBidParams) -> Result<()> {
+pub fn handle_submit_bid(ctx: Context<SubmitBid>, params: SubmitBidParams) -> Result<()> {
     let clock = Clock::get()?;
     let now = params.now;
     let auction = &mut ctx.accounts.auction;

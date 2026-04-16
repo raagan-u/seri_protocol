@@ -34,7 +34,7 @@ pub struct ClaimTokens<'info> {
     pub token_program: Program<'info, Token>,
 }
 
-pub fn handler(ctx: Context<ClaimTokens>) -> Result<()> {
+pub fn handle_claim_tokens(ctx: Context<ClaimTokens>) -> Result<()> {
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
     let auction = &ctx.accounts.auction;
