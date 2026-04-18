@@ -27,6 +27,55 @@ export async function fetchAuction(address: string): Promise<Auction> {
   return got ?? { ...MOCK_AUCTION, address };
 }
 
+export async function fetchAuctions(params?: {
+  status?: string;
+  creator?: string;
+}): Promise<Auction[] | null> {
+  const q = new URLSearchParams();
+  if (params?.status) q.set("status", params.status);
+  if (params?.creator) q.set("creator", params.creator);
+  const qs = q.toString();
+  return tryFetch<Auction[]>(`/api/auctions${qs ? `?${qs}` : ""}`);
+}
+
+export async function fetchAuctionBids(address: string): Promise<Bid[] | null> {
+  return tryFetch<Bid[]>(`/api/auctions/${address}/bids`);
+}
+
+export async function fetchUserAuctions(wallet: string): Promise<Auction[] | null> {
+  return tryFetch<Auction[]>(`/api/users/${wallet}/auctions`);
+}
+
+export async function connectWallet(wallet: string): Promise<void> {
+  try {
+    await fetch(`${API_BASE}/api/users/${wallet}/connect`, { method: "POST" });
+  } catch {
+    /* backend optional */
+  }
+}
+
+export async function setAuctionMetadata(
+  address: string,
+  body: {
+    token_name?: string;
+    token_symbol?: string;
+    token_tagline?: string;
+    token_icon_url?: string;
+    description?: string;
+  }
+): Promise<boolean> {
+  try {
+    const r = await fetch(`${API_BASE}/api/auctions/${address}/metadata`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function fetchPriceHistory(address: string): Promise<PricePoint[]> {
   const got = await tryFetch<PricePoint[]>(`/api/auctions/${address}/price-history`);
   return got ?? MOCK_PRICE_HISTORY;
