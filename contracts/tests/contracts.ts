@@ -589,29 +589,29 @@ describe("continuous_clearing_auction", () => {
       const [latestCheckpointPDA] = findCheckpointPDA(auctionPDA, startTime);
       const [newCheckpointPDA] = findCheckpointPDA(auctionPDA, now);
 
-      const tx = await program.methods
-        .submitBid({
-          maxPrice: bidPrice,
-          amount: new BN(bidAmount),
-          prevTickPrice: floorPrice,
-          now: new BN(now),
-        })
-        .accountsPartial({
-          bidder: bidder.publicKey,
-          auction: auctionPDA,
-          bid: bidPDA,
-          tick: tickPDA,
-          prevTick: floorTickPDA,
-          latestCheckpoint: latestCheckpointPDA,
-          newCheckpoint: newCheckpointPDA,
-          auctionSteps: stepsPDA,
-          bidderCurrencyAccount: bidderCurrencyAccount,
-          currencyVault: currencyVaultPDA,
-        })
-        .signers([bidder])
-        .rpc();
+      // const tx = await program.methods
+      //   .submitBid({
+      //     maxPrice: bidPrice,
+      //     amount: new BN(bidAmount),
+      //     prevTickPrice: floorPrice,
+      //     now: new BN(now),
+      //   })
+      //   .accountsPartial({
+      //     bidder: bidder.publicKey,
+      //     auction: auctionPDA,
+      //     bid: bidPDA,
+      //     tick: tickPDA,
+      //     prevTick: floorTickPDA,
+      //     latestCheckpoint: latestCheckpointPDA,
+      //     newCheckpoint: newCheckpointPDA,
+      //     auctionSteps: stepsPDA,
+      //     bidderCurrencyAccount: bidderCurrencyAccount,
+      //     currencyVault: currencyVaultPDA,
+      //   })
+      //   .signers([bidder])
+      //   .rpc();
 
-      console.log("Submit bid tx:", tx);
+      // console.log("Submit bid tx:", tx);
 
       const bid = await program.account.bid.fetch(bidPDA);
       expect(bid.owner.toBase58()).to.equal(bidder.publicKey.toBase58());

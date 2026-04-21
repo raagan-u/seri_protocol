@@ -4,6 +4,7 @@ import { fetchAuctions } from "../api/client";
 import { MOCK_AUCTION } from "../api/mock";
 import { fmtPrice, shortAddr } from "../format";
 import { StatusBadge, type AuctionStatusBadge } from "../components/primitives";
+import { ConnectButton } from "../components/ConnectButton";
 
 function openAuction(addr: string) {
   const u = new URL(window.location.href);
@@ -41,13 +42,26 @@ export function Browse() {
       }}
     >
       <div style={{ maxWidth: 1200, margin: "0 auto" }}>
+        <div
+          style={{
+            marginBottom: 32,
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "space-between",
+            gap: 16,
+          }}
+        >
+          <div>
+            <h1 style={{ margin: 0, fontSize: 32, letterSpacing: "-0.03em" }}>
+              Seri Protocol
+            </h1>
+            <p style={{ marginTop: 8, color: "var(--text-muted)" }}>
+              Continuous-clearing token auctions on Solana.
+            </p>
+          </div>
+          <ConnectButton />
+        </div>
         <div style={{ marginBottom: 32 }}>
-          <h1 style={{ margin: 0, fontSize: 32, letterSpacing: "-0.03em" }}>
-            Seri Protocol
-          </h1>
-          <p style={{ marginTop: 8, color: "var(--text-muted)" }}>
-            Continuous-clearing token auctions on Solana.
-          </p>
           {err && (
             <div style={{ color: "var(--danger, #ef4444)", marginTop: 8 }}>
               {err}

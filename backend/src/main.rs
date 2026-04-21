@@ -1,5 +1,6 @@
 mod accounts;
 mod api;
+mod bid_tx;
 mod config;
 mod crank;
 mod db;
@@ -69,6 +70,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/auctions/:address/bid-book", get(api::get_bid_book))
         .route("/auctions/:address/bids", get(api::get_auction_bids))
         .route("/auctions/:address/metadata", axum::routing::post(api::set_metadata))
+        .route("/auctions/:address/bid/build-tx", axum::routing::post(bid_tx::build_bid_tx))
         .route("/users/:wallet/bids", get(api::get_user_bids))
         .route("/users/:wallet/auctions", get(api::get_user_auctions))
         .route("/users/:wallet/connect", axum::routing::post(api::wallet_connect))

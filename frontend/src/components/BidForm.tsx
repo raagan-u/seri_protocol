@@ -6,6 +6,8 @@ import { fmtPrice, fmtTokens } from "../format";
 export interface BidFormSubmission {
   maxPrice: number;
   amount: number;
+  maxPriceStr: string;
+  amountStr: string;
 }
 
 export function BidForm({
@@ -13,6 +15,8 @@ export function BidForm({
   floorPrice,
   maxBidPrice,
   onSubmit,
+  disabled,
+  disabledReason,
 }: {
   clearingPrice: number;
   floorPrice: number;
@@ -20,10 +24,16 @@ export function BidForm({
   // tickSpacing is part of the protocol spec; unused in current form
   // but accepted so callers stay aligned with the API shape.
   tickSpacing?: number;
-  onSubmit?: (s: BidFormSubmission) => void;
+  onSubmit?: (s: BidFormSubmission) => Promise<void> | void;
+  disabled?: boolean;
+  disabledReason?: string;
 }) {
   const [maxPrice, setMaxPrice] = useState("0.40");
   const [amount, setAmount] = useState("1000");
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState<
+    { kind: "ok"; text: string } | { kind: "err"; text: string } | null
+  >(null);
 
   const maxP = parseFloat(maxPrice) || 0;
   const amt = parseFloat(amount) || 0;
@@ -44,9 +54,27 @@ export function BidForm({
     riskColor = "var(--accent)";
   }
 
-  const submit = () => {
-    if (onSubmit) onSubmit({ maxPrice: maxP, amount: amt });
+  const submit = async () => {
+    if (!onSubmit || submitting) return;
+    setSubmitting(true);
+    setResult(null);
+    try {
+      await onSubmit({
+        maxPrice: maxP,
+        amount: amt,
+        maxPriceStr: maxPrice,
+        amountStr: amount,
+      });
+      setResult({ kind: "ok", text: "Bid submitted." });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setResult({ kind: "err", text: msg });
+    } finally {
+      setSubmitting(false);
+    }
   };
+
+  const isDisabled = submitting || disabled || maxP <= clearingPrice || amt <= 0;
 
   return (
     <Card pad={20} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -143,9 +171,36 @@ export function BidForm({
         </div>
       )}
 
-      <Button variant="primary" size="lg" full onClick={submit}>
-        Submit bid
+      <Button
+        variant="primary"
+        size="lg"
+        full
+        onClick={submit}
+        disabled={isDisabled}
+      >
+        {submitting ? "Submitting…" : disabled ? (disabledReason ?? "Submit bid") : "Submit bid"}
       </Button>
+
+      {result && (
+        <div
+          style={{
+            fontSize: 11,
+            color:
+              result.kind === "ok" ? "var(--accent)" : "var(--danger)",
+            textAlign: "center",
+            padding: "6px 8px",
+            background:
+              result.kind === "ok" ? "var(--accent-bg)" : "var(--danger-bg)",
+            border: `1px solid ${
+              result.kind === "ok" ? "var(--accent)" : "var(--danger)"
+            }33`,
+            borderRadius: 6,
+            wordBreak: "break-word",
+          }}
+        >
+          {result.text}
+        </div>
+      )}
 
       <div
         style={{

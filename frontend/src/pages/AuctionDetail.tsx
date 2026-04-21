@@ -1,10 +1,16 @@
 import { useEffect, useState } from "react";
+import { Transaction } from "@solana/web3.js";
 import type { Auction, Bid, BidBookRow, PricePoint } from "../api/types";
-import { fetchAuction, fetchBidBook, fetchPriceHistory, fetchUserBid } from "../api/client";
+import {
+  buildBidTx,
+  fetchAuction,
+  fetchBidBook,
+  fetchPriceHistory,
+  fetchUserBid,
+} from "../api/client";
 import type { MockBidMode } from "../api/mock";
 import { fmt, fmtPrice, shortAddr } from "../format";
 import {
-  Button,
   Card,
   Countdown,
   Delta,
@@ -16,8 +22,10 @@ import {
 } from "../components/primitives";
 import { PriceChart } from "../components/PriceChart";
 import { BidBook } from "../components/BidBook";
-import { BidForm } from "../components/BidForm";
+import { BidForm, type BidFormSubmission } from "../components/BidForm";
 import { BidStatusCard, type BidCardMode } from "../components/BidStatusCard";
+import { ConnectButton } from "../components/ConnectButton";
+import { useWallet } from "../hooks/useWallet";
 
 // Map backend status → UI badge. They're mostly 1:1 but "claimable" is a
 // post-graduation state we show as "graduated" in the header.
@@ -65,6 +73,7 @@ export function AuctionDetail({
   const [priceHistory, setPriceHistory] = useState<PricePoint[]>([]);
   const [bidBook, setBidBook] = useState<BidBookRow[]>([]);
   const [userBid, setUserBid] = useState<Bid | null>(null);
+  const { publicKey, isConnected, signAndSendTransaction } = useWallet();
 
   useEffect(() => {
     let cancelled = false;
@@ -221,6 +230,26 @@ export function AuctionDetail({
                 floorPrice={floorPrice}
                 maxBidPrice={maxBidPrice}
                 tickSpacing={tickSpacing}
+                disabled={!isConnected || !publicKey}
+                disabledReason={
+                  !isConnected || !publicKey ? "Connect wallet to bid" : undefined
+                }
+                onSubmit={async (s: BidFormSubmission) => {
+                  if (!publicKey) throw new Error("Wallet not connected");
+                  const { tx } = await buildBidTx(auctionAddress, {
+                    bidder: publicKey,
+                    maxPrice: s.maxPriceStr,
+                    amount: s.amountStr,
+                  });
+                  const raw = Uint8Array.from(atob(tx), (c) => c.charCodeAt(0));
+                  const transaction = Transaction.from(raw);
+                  const { signature } = await signAndSendTransaction(transaction);
+                  // Surface the signature in the form's success message by
+                  // re-throwing with a friendly label isn't great — instead,
+                  // we rely on the form's default "Bid submitted." success
+                  // state, and log the signature for the user.
+                  console.info("submit_bid signature:", signature);
+                }}
               />
             )}
             {!isLive && (
@@ -239,7 +268,7 @@ export function AuctionDetail({
   );
 }
 
-function TopBar({ wallet }: { wallet: string | null }) {
+function TopBar(_props: { wallet: string | null }) {
   return (
     <div
       style={{
@@ -263,19 +292,7 @@ function TopBar({ wallet }: { wallet: string | null }) {
           <a style={{ cursor: "pointer" }}>Docs</a>
         </nav>
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        {wallet && (
-          <div
-            className="num"
-            style={{ fontSize: 11, color: "var(--text-3)", letterSpacing: "0.1em" }}
-          >
-            SOL · {shortAddr(wallet)}
-          </div>
-        )}
-        <Button variant="ghost" size="sm">
-          {wallet ? "Connected" : "Connect wallet"}
-        </Button>
-      </div>
+      <ConnectButton />
     </div>
   );
 }

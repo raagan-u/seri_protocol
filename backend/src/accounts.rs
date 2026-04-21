@@ -59,6 +59,15 @@ pub struct BidAccount {
 }
 
 #[derive(BorshDeserialize, Debug, Clone)]
+pub struct TickAccount {
+    pub auction: [u8; 32],
+    pub price: u128,
+    pub next_price: u128,
+    pub currency_demand_q64: u128,
+    pub bump: u8,
+}
+
+#[derive(BorshDeserialize, Debug, Clone)]
 pub struct CheckpointAccount {
     pub auction: [u8; 32],
     pub timestamp: i64,

@@ -8,9 +8,9 @@ import {
 } from "./mock";
 
 const API_BASE =
-  (import.meta.env.VITE_API_BASE as string | undefined) ?? "http://localhost:3001";
+  (import.meta.env.VITE_API_BASE as string | undefined) ?? "http://localhost:3002";
 const WS_BASE =
-  (import.meta.env.VITE_WS_BASE as string | undefined) ?? "ws://localhost:3001/ws";
+  (import.meta.env.VITE_WS_BASE as string | undefined) ?? "ws://localhost:3002/ws";
 
 async function tryFetch<T>(path: string): Promise<T | null> {
   try {
@@ -52,6 +52,28 @@ export async function connectWallet(wallet: string): Promise<void> {
   } catch {
     /* backend optional */
   }
+}
+
+export interface BuildBidTxResponse {
+  tx: string; // base64-encoded unsigned legacy Transaction
+  bidPda: string;
+  now: number;
+}
+
+export async function buildBidTx(
+  auction: string,
+  body: { bidder: string; maxPrice: string; amount: string }
+): Promise<BuildBidTxResponse> {
+  const r = await fetch(`${API_BASE}/api/auctions/${auction}/bid/build-tx`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const msg = await r.text().catch(() => "build-tx failed");
+    throw new Error(msg || `build-tx failed (${r.status})`);
+  }
+  return (await r.json()) as BuildBidTxResponse;
 }
 
 export async function setAuctionMetadata(
