@@ -23,6 +23,14 @@ export function createAuctionUrl(baseHref?: string): string {
   }, baseHref);
 }
 
+export function docsUrl(baseHref?: string): string {
+  return nextUrl((params) => {
+    params.set("page", "docs");
+    params.delete("auction");
+    params.delete("bid");
+  }, baseHref);
+}
+
 export function auctionUrl(address: string, baseHref?: string): string {
   return nextUrl((params) => {
     params.delete("page");
@@ -36,6 +44,10 @@ export function goToBrowse() {
 
 export function goToCreateAuction() {
   window.location.assign(createAuctionUrl());
+}
+
+export function goToDocs() {
+  window.location.assign(docsUrl());
 }
 
 export function goToAuction(address: string) {

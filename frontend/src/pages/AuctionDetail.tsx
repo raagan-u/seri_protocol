@@ -26,7 +26,7 @@ import { BidForm, type BidFormSubmission } from "../components/BidForm";
 import { BidStatusCard, type BidCardMode } from "../components/BidStatusCard";
 import { ConnectButton } from "../components/ConnectButton";
 import { useWallet } from "../hooks/useWallet";
-import { browseUrl, createAuctionUrl } from "../navigation";
+import { browseUrl, createAuctionUrl, docsUrl } from "../navigation";
 
 // Map backend status → UI badge. They're mostly 1:1 but "claimable" is a
 // post-graduation state we show as "graduated" in the header.
@@ -295,7 +295,9 @@ function TopBar(_props: { wallet: string | null }) {
           <a href={createAuctionUrl()} style={{ cursor: "pointer" }}>
             Launch
           </a>
-          <a style={{ cursor: "pointer" }}>Docs</a>
+          <a href={docsUrl()} style={{ cursor: "pointer" }}>
+            Docs
+          </a>
         </nav>
       </div>
       <ConnectButton />

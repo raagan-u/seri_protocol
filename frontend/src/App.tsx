@@ -1,6 +1,7 @@
 import { AuctionDetail } from "./pages/AuctionDetail";
 import { Browse } from "./pages/Browse";
 import { CreateAuction } from "./pages/CreateAuction";
+import { Docs } from "./pages/Docs";
 import type { MockBidMode } from "./api/mock";
 import { useWallet } from "./hooks/useWallet";
 
@@ -24,6 +25,7 @@ export default function App() {
   const wallet = walletOverride ?? publicKey;
 
   if (page === "create") return <CreateAuction wallet={wallet} />;
+  if (page === "docs") return <Docs />;
 
   const bidParam = url.searchParams.get("bid") as MockBidMode | null;
   const mockBidMode: MockBidMode =
