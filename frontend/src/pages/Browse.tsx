@@ -3,14 +3,9 @@ import type { Auction } from "../api/types";
 import { fetchAuctions } from "../api/client";
 import { MOCK_AUCTION } from "../api/mock";
 import { fmtPrice, shortAddr } from "../format";
+import { createAuctionUrl, goToAuction } from "../navigation";
 import { StatusBadge, type AuctionStatusBadge } from "../components/primitives";
 import { ConnectButton } from "../components/ConnectButton";
-
-function openAuction(addr: string) {
-  const u = new URL(window.location.href);
-  u.searchParams.set("auction", addr);
-  window.location.href = u.toString();
-}
 
 export function Browse() {
   const [auctions, setAuctions] = useState<Auction[] | null>(null);
@@ -61,7 +56,7 @@ export function Browse() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <a
-              href="?page=create"
+              href={createAuctionUrl()}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -105,7 +100,7 @@ export function Browse() {
           {display.map((a) => (
             <button
               key={a.address}
-              onClick={() => openAuction(a.address)}
+              onClick={() => goToAuction(a.address)}
               style={{
                 textAlign: "left",
                 background: "var(--bg-card)",

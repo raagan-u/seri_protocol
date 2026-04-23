@@ -10,6 +10,7 @@ import type {
   InitializeAuctionParamsInput,
 } from "../api/types";
 import { useWallet } from "../hooks/useWallet";
+import { auctionUrl, browseUrl } from "../navigation";
 
 // ---- preset → steps math ---------------------------------------------------
 
@@ -319,7 +320,7 @@ export function CreateAuction({ wallet }: { wallet: string | null }) {
       }
 
       setSubmit("success");
-      window.location.search = `?auction=${resp.auctionPda}`;
+      window.location.assign(auctionUrl(resp.auctionPda));
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : String(err));
       setSubmit("error");
@@ -608,7 +609,7 @@ export function CreateAuction({ wallet }: { wallet: string | null }) {
               variant="ghost"
               size="lg"
               onClick={() => {
-                window.location.search = `?auction=${auctionPda}`;
+                window.location.assign(auctionUrl(auctionPda));
               }}
             >
               Open auction
@@ -618,7 +619,7 @@ export function CreateAuction({ wallet }: { wallet: string | null }) {
             variant="ghost"
             size="lg"
             onClick={() => {
-              window.location.search = "";
+              window.location.assign(browseUrl());
             }}
           >
             Cancel
@@ -642,7 +643,7 @@ function TopBar() {
       }}
     >
       <a
-        href="?"
+        href={browseUrl()}
         style={{
           color: "var(--text-muted)",
           textDecoration: "none",

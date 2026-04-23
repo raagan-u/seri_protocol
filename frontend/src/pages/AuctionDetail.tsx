@@ -26,6 +26,7 @@ import { BidForm, type BidFormSubmission } from "../components/BidForm";
 import { BidStatusCard, type BidCardMode } from "../components/BidStatusCard";
 import { ConnectButton } from "../components/ConnectButton";
 import { useWallet } from "../hooks/useWallet";
+import { browseUrl, createAuctionUrl } from "../navigation";
 
 // Map backend status → UI badge. They're mostly 1:1 but "claimable" is a
 // post-graduation state we show as "graduated" in the header.
@@ -152,6 +153,7 @@ export function AuctionDetail({
       >
         <div style={{ marginBottom: 24 }}>
           <a
+            href={browseUrl()}
             style={{
               fontSize: 12,
               color: "var(--text-3)",
@@ -287,8 +289,12 @@ function TopBar(_props: { wallet: string | null }) {
       <div style={{ display: "flex", alignItems: "center", gap: 28 }}>
         <Logo />
         <nav style={{ display: "flex", gap: 22, fontSize: 13, color: "var(--text-2)" }}>
-          <a style={{ color: "var(--text)", cursor: "pointer" }}>Auctions</a>
-          <a style={{ cursor: "pointer" }}>Launch</a>
+          <a href={browseUrl()} style={{ color: "var(--text)", cursor: "pointer" }}>
+            Auctions
+          </a>
+          <a href={createAuctionUrl()} style={{ cursor: "pointer" }}>
+            Launch
+          </a>
           <a style={{ cursor: "pointer" }}>Docs</a>
         </nav>
       </div>
@@ -984,4 +990,3 @@ function AuctionTimelineMini({ status }: { status: Auction["status"] }) {
     </Card>
   );
 }
-
