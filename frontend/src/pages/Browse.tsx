@@ -59,7 +59,28 @@ export function Browse() {
               Continuous-clearing token auctions on Solana.
             </p>
           </div>
-          <ConnectButton />
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <a
+              href="?page=create"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                height: 38,
+                padding: "0 18px",
+                borderRadius: 999,
+                background: "var(--accent)",
+                color: "#0A0B0E",
+                border: "1px solid var(--accent)",
+                fontSize: 13,
+                fontWeight: 500,
+                letterSpacing: "0.02em",
+                textDecoration: "none",
+              }}
+            >
+              Create auction
+            </a>
+            <ConnectButton />
+          </div>
         </div>
         <div style={{ marginBottom: 32 }}>
           {err && (

@@ -1,4 +1,11 @@
-import type { Auction, Bid, BidBookRow, PricePoint, WsEvent } from "./types";
+import type {
+  Auction,
+  Bid,
+  BidBookRow,
+  CreateAuctionPayload,
+  PricePoint,
+  WsEvent,
+} from "./types";
 import {
   MOCK_AUCTION,
   MOCK_BID_BOOK,
@@ -74,6 +81,29 @@ export async function buildBidTx(
     throw new Error(msg || `build-tx failed (${r.status})`);
   }
   return (await r.json()) as BuildBidTxResponse;
+}
+
+export interface BuildInitTxResponse {
+  tx: string;            // base64-encoded unsigned transaction
+  auctionPda: string;    // derived auction PDA (for redirects)
+  tokenVault: string;
+  currencyVault: string;
+}
+
+// Posts the create-auction form payload to the backend's future build-init-tx
+// endpoint. Returns null when the endpoint responds non-OK so the caller can
+// gracefully fall back (the endpoint isn't implemented yet — signing wiring is
+// deferred).
+export async function buildInitTx(
+  payload: CreateAuctionPayload
+): Promise<BuildInitTxResponse | null> {
+  const r = await fetch(`${API_BASE}/api/auctions/build-init-tx`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) return null;
+  return (await r.json()) as BuildInitTxResponse;
 }
 
 export async function setAuctionMetadata(

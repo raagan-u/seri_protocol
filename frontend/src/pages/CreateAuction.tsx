@@ -1,0 +1,796 @@
+import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from "react";
+import { Button, Card, Label } from "../components/primitives";
+import { ConnectButton } from "../components/ConnectButton";
+import { buildInitTx } from "../api/client";
+import type {
+  AuctionStepInput,
+  CreateAuctionPayload,
+  EmissionPreset,
+  InitializeAuctionParamsInput,
+} from "../api/types";
+
+// ---- preset → steps math ---------------------------------------------------
+
+const MPS_TOTAL = 10_000_000;
+
+// Split `weight` (integer) across `duration` integer seconds into 1–2 steps
+// such that Σ mps·duration = weight exactly.
+function exactSteps(weight: number, duration: number): AuctionStepInput[] {
+  if (duration <= 0 || weight <= 0) return [];
+  const k = Math.floor(weight / duration);
+  const r = weight - k * duration;
+  if (r === 0) return [{ mps: k, duration }];
+  // (k+1)*r + k*(duration-r) = weight
+  const out: AuctionStepInput[] = [];
+  if (r > 0) out.push({ mps: k + 1, duration: r });
+  if (duration - r > 0 && k > 0) out.push({ mps: k, duration: duration - r });
+  return out;
+}
+
+// Split full auction duration D into N phases of roughly equal length, then
+// distribute MPS_TOTAL across phases by `weightFractions` (must sum to 1).
+// Largest-remainder method ensures Σ weights = MPS_TOTAL exactly.
+function buildPhases(D: number, weightFractions: number[]): AuctionStepInput[] {
+  const N = weightFractions.length;
+  const baseDur = Math.floor(D / N);
+  const durations = Array<number>(N).fill(baseDur);
+  durations[N - 1] = D - baseDur * (N - 1);
+
+  const ideal = weightFractions.map((f) => f * MPS_TOTAL);
+  const weights = ideal.map(Math.floor);
+  let deficit = MPS_TOTAL - weights.reduce((a, b) => a + b, 0);
+  const order = ideal
+    .map((w, i) => ({ i, frac: w - Math.floor(w) }))
+    .sort((a, b) => b.frac - a.frac);
+  for (let j = 0; j < deficit; j++) weights[order[j % N].i] += 1;
+
+  const out: AuctionStepInput[] = [];
+  for (let i = 0; i < N; i++) out.push(...exactSteps(weights[i], durations[i]));
+  return out;
+}
+
+function buildStepsForPreset(preset: EmissionPreset, D: number): AuctionStepInput[] {
+  if (D <= 0) return [];
+  switch (preset) {
+    case "flat":
+      return exactSteps(MPS_TOTAL, D);
+    case "frontloaded":
+      return buildPhases(D, [0.7, 0.3]);
+    case "backloaded":
+      return buildPhases(D, [0.3, 0.7]);
+    case "linear-decay":
+      return buildPhases(D, [0.4, 0.3, 0.2, 0.1]);
+  }
+}
+
+const PRESET_COPY: Record<EmissionPreset, { label: string; blurb: string }> = {
+  flat: {
+    label: "Flat",
+    blurb: "Emit supply at a constant rate across the entire auction.",
+  },
+  frontloaded: {
+    label: "Frontloaded",
+    blurb: "70% of supply in the first half, 30% in the second.",
+  },
+  backloaded: {
+    label: "Backloaded",
+    blurb: "30% of supply in the first half, 70% in the second.",
+  },
+  "linear-decay": {
+    label: "Linear decay",
+    blurb: "40 / 30 / 20 / 10 across four equal phases — heavy early, light late.",
+  },
+};
+
+// ---- form state ------------------------------------------------------------
+
+interface FormState {
+  // identity
+  tokenName: string;
+  tokenSymbol: string;
+  tokenTagline: string;
+  tokenDescription: string;
+  tokenIconUrl: string;
+  // setup
+  tokenMint: string;
+  currencyMint: string;
+  totalSupply: string;
+  // schedule (datetime-local strings, e.g. "2026-05-01T10:00")
+  startTime: string;
+  endTime: string;
+  claimTime: string;
+  // pricing
+  floorPrice: string;
+  tickSpacing: string;
+  requiredCurrencyRaised: string;
+  // emission
+  preset: EmissionPreset;
+  // recipients
+  fundsRecipient: string;
+  tokensRecipient: string;
+}
+
+const BLANK: FormState = {
+  tokenName: "",
+  tokenSymbol: "",
+  tokenTagline: "",
+  tokenDescription: "",
+  tokenIconUrl: "",
+  tokenMint: "",
+  currencyMint: "",
+  totalSupply: "",
+  startTime: "",
+  endTime: "",
+  claimTime: "",
+  floorPrice: "",
+  tickSpacing: "2",
+  requiredCurrencyRaised: "",
+  preset: "flat",
+  fundsRecipient: "",
+  tokensRecipient: "",
+};
+
+// ---- validation ------------------------------------------------------------
+
+const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+function toUnix(dtLocal: string): number {
+  // datetime-local is interpreted in the user's local tz; Date parses it that way.
+  const ms = new Date(dtLocal).getTime();
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : NaN;
+}
+
+type Errors = Partial<Record<keyof FormState | "steps", string>>;
+
+function validate(f: FormState): Errors {
+  const e: Errors = {};
+  if (!f.tokenName.trim()) e.tokenName = "Required";
+  if (!f.tokenSymbol.trim()) e.tokenSymbol = "Required";
+  else if (f.tokenSymbol.length > 10) e.tokenSymbol = "Keep ≤ 10 chars";
+
+  if (!BASE58_RE.test(f.tokenMint)) e.tokenMint = "Invalid base58 address";
+  if (!BASE58_RE.test(f.currencyMint)) e.currencyMint = "Invalid base58 address";
+  if (!BASE58_RE.test(f.fundsRecipient)) e.fundsRecipient = "Invalid base58 address";
+  if (!BASE58_RE.test(f.tokensRecipient)) e.tokensRecipient = "Invalid base58 address";
+
+  const supply = Number(f.totalSupply);
+  if (!(supply > 0)) e.totalSupply = "Must be > 0";
+
+  const start = toUnix(f.startTime);
+  const end = toUnix(f.endTime);
+  const claim = toUnix(f.claimTime);
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(start)) e.startTime = "Required";
+  else if (start <= nowSec) e.startTime = "Must be in the future";
+  if (!Number.isFinite(end)) e.endTime = "Required";
+  else if (Number.isFinite(start) && end <= start) e.endTime = "Must be after start";
+  if (!Number.isFinite(claim)) e.claimTime = "Required";
+  else if (Number.isFinite(end) && claim < end) e.claimTime = "Must be ≥ end";
+
+  const floor = Number(f.floorPrice);
+  if (!(floor > 0)) e.floorPrice = "Must be > 0";
+  const tick = Number(f.tickSpacing);
+  if (!Number.isInteger(tick) || tick < 2) e.tickSpacing = "Integer ≥ 2";
+  const required = Number(f.requiredCurrencyRaised);
+  if (!(required > 0)) e.requiredCurrencyRaised = "Must be > 0";
+
+  // steps sanity from preset + duration
+  if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+    const steps = buildStepsForPreset(f.preset, end - start);
+    if (steps.length === 0) e.steps = "Could not build steps from duration";
+    else {
+      const wSum = steps.reduce((a, s) => a + s.mps * s.duration, 0);
+      const dSum = steps.reduce((a, s) => a + s.duration, 0);
+      if (wSum !== MPS_TOTAL) e.steps = `Weight sum ${wSum} ≠ ${MPS_TOTAL}`;
+      if (dSum !== end - start) e.steps = `Duration sum ${dSum} ≠ ${end - start}`;
+    }
+  }
+  return e;
+}
+
+function buildPayload(f: FormState, creator: string): CreateAuctionPayload {
+  const start = toUnix(f.startTime);
+  const end = toUnix(f.endTime);
+  const claim = toUnix(f.claimTime);
+  const steps = buildStepsForPreset(f.preset, end - start);
+  const params: InitializeAuctionParamsInput = {
+    totalSupply: f.totalSupply,
+    startTime: start,
+    endTime: end,
+    claimTime: claim,
+    tickSpacing: Number(f.tickSpacing),
+    floorPrice: f.floorPrice,
+    requiredCurrencyRaised: f.requiredCurrencyRaised,
+    tokensRecipient: f.tokensRecipient,
+    fundsRecipient: f.fundsRecipient,
+    steps,
+  };
+  const metadata = {
+    tokenName: f.tokenName,
+    tokenSymbol: f.tokenSymbol,
+    tokenTagline: f.tokenTagline || undefined,
+    tokenDescription: f.tokenDescription || undefined,
+    tokenIconUrl: f.tokenIconUrl || undefined,
+  };
+  return {
+    creator,
+    tokenMint: f.tokenMint,
+    currencyMint: f.currencyMint,
+    preset: f.preset,
+    params,
+    metadata,
+  };
+}
+
+// ---- page ------------------------------------------------------------------
+
+type SubmitState = "idle" | "building" | "payload-logged" | "tx-ready" | "error";
+
+export function CreateAuction({ wallet }: { wallet: string | null }) {
+  const [form, setForm] = useState<FormState>(BLANK);
+  const [errors, setErrors] = useState<Errors>({});
+  const [touched, setTouched] = useState<Partial<Record<keyof FormState, true>>>({});
+  const [submit, setSubmit] = useState<SubmitState>("idle");
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+
+  // Pre-fill recipients from connected wallet (one-shot when wallet first appears)
+  useEffect(() => {
+    if (!wallet) return;
+    setForm((f) => ({
+      ...f,
+      fundsRecipient: f.fundsRecipient || wallet,
+      tokensRecipient: f.tokensRecipient || wallet,
+    }));
+  }, [wallet]);
+
+  const set = <K extends keyof FormState>(k: K) => (v: FormState[K]) =>
+    setForm((f) => ({ ...f, [k]: v }));
+  const markTouched = (k: keyof FormState) =>
+    setTouched((t) => ({ ...t, [k]: true }));
+
+  const stepsPreview = useMemo(() => {
+    const s = toUnix(form.startTime);
+    const e = toUnix(form.endTime);
+    if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) return null;
+    return buildStepsForPreset(form.preset, e - s);
+  }, [form.startTime, form.endTime, form.preset]);
+
+  const handleSubmit = async () => {
+    const e = validate(form);
+    setErrors(e);
+    // mark all fields touched so errors render
+    setTouched(
+      Object.keys(form).reduce<Record<string, true>>((a, k) => {
+        a[k] = true;
+        return a;
+      }, {}) as Partial<Record<keyof FormState, true>>
+    );
+    if (Object.keys(e).length) return;
+    if (!wallet) return;
+
+    const payload = buildPayload(form, wallet);
+    setSubmit("building");
+    setErrMsg(null);
+    try {
+      const resp = await buildInitTx(payload);
+      if (resp) {
+        setSubmit("tx-ready");
+      } else {
+        console.log("[create-auction] build-init-tx payload (no response):", payload);
+        setSubmit("payload-logged");
+      }
+    } catch (err) {
+      console.log("[create-auction] build-init-tx payload:", payload);
+      console.log("[create-auction] build-init-tx error:", err);
+      setErrMsg(err instanceof Error ? err.message : String(err));
+      setSubmit("payload-logged");
+    }
+  };
+
+  const canSubmit =
+    Boolean(wallet) && submit !== "building" && submit !== "tx-ready";
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        background: "var(--bg)",
+        color: "var(--text)",
+        padding: "48px 24px 160px",
+      }}
+    >
+      <div style={{ maxWidth: 880, margin: "0 auto" }}>
+        <TopBar />
+
+        <div style={{ marginTop: 24, marginBottom: 32 }}>
+          <h1 style={{ margin: 0, fontSize: 32, letterSpacing: "-0.03em" }}>
+            Create auction
+          </h1>
+          <p style={{ marginTop: 8, color: "var(--text-muted)" }}>
+            Launch a continuous-clearing auction. All on-chain parameters are
+            validated before submission.
+          </p>
+        </div>
+
+        <Section title="Token identity">
+          <Row>
+            <Field label="Token name" err={touched.tokenName ? errors.tokenName : undefined}>
+              <Input
+                value={form.tokenName}
+                onChange={(v) => set("tokenName")(v)}
+                onBlur={() => markTouched("tokenName")}
+                placeholder="Seri Protocol"
+              />
+            </Field>
+            <Field label="Symbol" err={touched.tokenSymbol ? errors.tokenSymbol : undefined}>
+              <Input
+                value={form.tokenSymbol}
+                onChange={(v) => set("tokenSymbol")(v.toUpperCase())}
+                onBlur={() => markTouched("tokenSymbol")}
+                placeholder="SERI"
+              />
+            </Field>
+          </Row>
+          <Field label="Tagline">
+            <Input
+              value={form.tokenTagline}
+              onChange={(v) => set("tokenTagline")(v)}
+              placeholder="One-line hook, shown on the listing card"
+            />
+          </Field>
+          <Field label="Description">
+            <TextArea
+              value={form.tokenDescription}
+              onChange={(v) => set("tokenDescription")(v)}
+              placeholder="Longer description shown on the auction detail page"
+              rows={4}
+            />
+          </Field>
+          <Field label="Icon URL">
+            <Input
+              value={form.tokenIconUrl}
+              onChange={(v) => set("tokenIconUrl")(v)}
+              placeholder="https://…"
+            />
+          </Field>
+        </Section>
+
+        <Section title="Token setup">
+          <Field label="Token mint" err={touched.tokenMint ? errors.tokenMint : undefined}>
+            <Input
+              value={form.tokenMint}
+              onChange={(v) => set("tokenMint")(v.trim())}
+              onBlur={() => markTouched("tokenMint")}
+              placeholder="Base58 mint address"
+              mono
+            />
+          </Field>
+          <Field label="Currency mint" err={touched.currencyMint ? errors.currencyMint : undefined}>
+            <Input
+              value={form.currencyMint}
+              onChange={(v) => set("currencyMint")(v.trim())}
+              onBlur={() => markTouched("currencyMint")}
+              placeholder="Base58 mint address (e.g. USDC)"
+              mono
+            />
+          </Field>
+          <Field label="Total supply" err={touched.totalSupply ? errors.totalSupply : undefined}>
+            <Input
+              value={form.totalSupply}
+              onChange={(v) => set("totalSupply")(v)}
+              onBlur={() => markTouched("totalSupply")}
+              placeholder="1000000"
+              suffix="tokens"
+            />
+          </Field>
+        </Section>
+
+        <Section title="Schedule">
+          <Row>
+            <Field label="Start" err={touched.startTime ? errors.startTime : undefined}>
+              <Input
+                type="datetime-local"
+                value={form.startTime}
+                onChange={(v) => set("startTime")(v)}
+                onBlur={() => markTouched("startTime")}
+              />
+            </Field>
+            <Field label="End" err={touched.endTime ? errors.endTime : undefined}>
+              <Input
+                type="datetime-local"
+                value={form.endTime}
+                onChange={(v) => set("endTime")(v)}
+                onBlur={() => markTouched("endTime")}
+              />
+            </Field>
+          </Row>
+          <Field label="Claim opens" err={touched.claimTime ? errors.claimTime : undefined}>
+            <Input
+              type="datetime-local"
+              value={form.claimTime}
+              onChange={(v) => set("claimTime")(v)}
+              onBlur={() => markTouched("claimTime")}
+            />
+          </Field>
+        </Section>
+
+        <Section title="Pricing">
+          <Row>
+            <Field label="Floor price" err={touched.floorPrice ? errors.floorPrice : undefined}>
+              <Input
+                value={form.floorPrice}
+                onChange={(v) => set("floorPrice")(v)}
+                onBlur={() => markTouched("floorPrice")}
+                placeholder="0.40"
+                suffix="per token"
+              />
+            </Field>
+            <Field label="Tick spacing" err={touched.tickSpacing ? errors.tickSpacing : undefined}>
+              <Input
+                value={form.tickSpacing}
+                onChange={(v) => set("tickSpacing")(v)}
+                onBlur={() => markTouched("tickSpacing")}
+                placeholder="2"
+              />
+            </Field>
+          </Row>
+          <Field
+            label="Required raise"
+            err={touched.requiredCurrencyRaised ? errors.requiredCurrencyRaised : undefined}
+          >
+            <Input
+              value={form.requiredCurrencyRaised}
+              onChange={(v) => set("requiredCurrencyRaised")(v)}
+              onBlur={() => markTouched("requiredCurrencyRaised")}
+              placeholder="250000"
+              suffix="currency units"
+            />
+          </Field>
+        </Section>
+
+        <Section title="Emission schedule">
+          <PresetPicker value={form.preset} onChange={(v) => set("preset")(v)} />
+          {errors.steps && (
+            <div style={{ color: "var(--danger, #e07062)", fontSize: 12, marginTop: 12 }}>
+              {errors.steps}
+            </div>
+          )}
+          {stepsPreview && (
+            <div style={{ marginTop: 16 }}>
+              <Label>Generated steps ({stepsPreview.length})</Label>
+              <div
+                style={{
+                  marginTop: 8,
+                  fontFamily: "monospace",
+                  fontSize: 12,
+                  color: "var(--text-muted)",
+                  display: "grid",
+                  gap: 4,
+                }}
+              >
+                {stepsPreview.map((s, i) => (
+                  <div key={i}>
+                    {i + 1}. mps={s.mps}, duration={s.duration}s ({humanDur(s.duration)})
+                    &nbsp;·&nbsp;weight={s.mps * s.duration}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </Section>
+
+        <Section title="Recipients">
+          <Field label="Funds recipient" err={touched.fundsRecipient ? errors.fundsRecipient : undefined}>
+            <Input
+              value={form.fundsRecipient}
+              onChange={(v) => set("fundsRecipient")(v.trim())}
+              onBlur={() => markTouched("fundsRecipient")}
+              placeholder="Base58 wallet"
+              mono
+            />
+          </Field>
+          <Field
+            label="Unsold-tokens recipient"
+            err={touched.tokensRecipient ? errors.tokensRecipient : undefined}
+          >
+            <Input
+              value={form.tokensRecipient}
+              onChange={(v) => set("tokensRecipient")(v.trim())}
+              onBlur={() => markTouched("tokensRecipient")}
+              placeholder="Base58 wallet"
+              mono
+            />
+          </Field>
+        </Section>
+
+        {/* Banners */}
+        {!wallet && (
+          <Banner tone="warn">
+            Connect a wallet to create an auction. Your address will auto-fill
+            the recipient fields.
+          </Banner>
+        )}
+        {submit === "payload-logged" && (
+          <Banner tone="warn">
+            Backend build-init-tx endpoint is not wired yet. Payload has been
+            logged to the console so you can sign and submit manually.
+            {errMsg && <div style={{ marginTop: 6, opacity: 0.8 }}>{errMsg}</div>}
+          </Banner>
+        )}
+        {submit === "tx-ready" && (
+          <Banner tone="accent">
+            Transaction built. Signing step is not wired yet — see console for
+            the response payload.
+          </Banner>
+        )}
+
+        <div style={{ marginTop: 32, display: "flex", gap: 12 }}>
+          <Button
+            variant="primary"
+            size="lg"
+            onClick={handleSubmit}
+            disabled={!canSubmit}
+          >
+            {submit === "building" ? "Building transaction…" : "Create auction"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="lg"
+            onClick={() => {
+              window.location.search = "";
+            }}
+          >
+            Cancel
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---- small sub-components --------------------------------------------------
+
+function TopBar() {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 16,
+      }}
+    >
+      <a
+        href="?"
+        style={{
+          color: "var(--text-muted)",
+          textDecoration: "none",
+          fontSize: 13,
+        }}
+      >
+        ← Back to browse
+      </a>
+      <ConnectButton />
+    </div>
+  );
+}
+
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <Card pad={24} style={{ marginBottom: 20 }}>
+      <Label>{title}</Label>
+      <div style={{ marginTop: 16, display: "grid", gap: 14 }}>{children}</div>
+    </Card>
+  );
+}
+
+function Row({ children }: { children: ReactNode }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+      {children}
+    </div>
+  );
+}
+
+function Field({
+  label,
+  err,
+  children,
+}: {
+  label: string;
+  err?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div>
+      <div
+        style={{
+          fontSize: 11,
+          color: "var(--text-3)",
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          marginBottom: 6,
+        }}
+      >
+        {label}
+      </div>
+      {children}
+      {err && (
+        <div style={{ color: "var(--danger, #e07062)", fontSize: 12, marginTop: 4 }}>
+          {err}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Input({
+  value,
+  onChange,
+  onBlur,
+  placeholder,
+  type = "text",
+  suffix,
+  mono = false,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onBlur?: () => void;
+  placeholder?: string;
+  type?: string;
+  suffix?: string;
+  mono?: boolean;
+}) {
+  const handle = (e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value);
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        background: "var(--bg, #0E0F12)",
+        border: "1px solid var(--border)",
+        borderRadius: 8,
+        padding: "0 12px",
+        height: 40,
+      }}
+    >
+      <input
+        value={value}
+        onChange={handle}
+        onBlur={onBlur}
+        type={type}
+        placeholder={placeholder}
+        style={{
+          flex: 1,
+          background: "transparent",
+          border: "none",
+          outline: "none",
+          color: "var(--text)",
+          fontSize: 14,
+          fontFamily: mono
+            ? "ui-monospace, SFMono-Regular, Menlo, monospace"
+            : "inherit",
+          height: "100%",
+        }}
+      />
+      {suffix && (
+        <span style={{ color: "var(--text-3)", fontSize: 12, marginLeft: 8 }}>
+          {suffix}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function TextArea({
+  value,
+  onChange,
+  placeholder,
+  rows = 3,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  rows?: number;
+}) {
+  return (
+    <textarea
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      rows={rows}
+      style={{
+        width: "100%",
+        boxSizing: "border-box",
+        background: "var(--bg, #0E0F12)",
+        border: "1px solid var(--border)",
+        borderRadius: 8,
+        padding: "10px 12px",
+        color: "var(--text)",
+        fontSize: 14,
+        fontFamily: "inherit",
+        resize: "vertical",
+        outline: "none",
+      }}
+    />
+  );
+}
+
+function PresetPicker({
+  value,
+  onChange,
+}: {
+  value: EmissionPreset;
+  onChange: (v: EmissionPreset) => void;
+}) {
+  const keys: EmissionPreset[] = ["flat", "frontloaded", "backloaded", "linear-decay"];
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+      {keys.map((k) => {
+        const active = value === k;
+        return (
+          <button
+            key={k}
+            type="button"
+            onClick={() => onChange(k)}
+            style={{
+              textAlign: "left",
+              background: active ? "var(--accent-bg)" : "transparent",
+              border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`,
+              color: active ? "var(--accent)" : "var(--text)",
+              borderRadius: 10,
+              padding: 14,
+              cursor: "pointer",
+              font: "inherit",
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>
+              {PRESET_COPY[k].label}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              {PRESET_COPY[k].blurb}
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function Banner({ children, tone }: { children: ReactNode; tone: "warn" | "accent" }) {
+  const toneStyle =
+    tone === "accent"
+      ? {
+          background: "var(--accent-bg)",
+          border: "1px solid rgba(127,224,194,0.18)",
+          color: "var(--accent)",
+        }
+      : {
+          background: "var(--warn-bg, rgba(224,176,98,0.08))",
+          border: "1px solid rgba(224,176,98,0.18)",
+          color: "var(--warn, #e0b062)",
+        };
+  return (
+    <div
+      style={{
+        marginTop: 20,
+        borderRadius: 10,
+        padding: 14,
+        fontSize: 13,
+        ...toneStyle,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+// ---- utils -----------------------------------------------------------------
+
+function humanDur(sec: number): string {
+  if (sec < 60) return `${sec}s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`;
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}

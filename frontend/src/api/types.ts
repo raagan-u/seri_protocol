@@ -85,6 +85,51 @@ export interface Bid {
   tokensFilled: number;
 }
 
+// ---- create auction (initialize) ----
+
+export interface AuctionStepInput {
+  mps: number;      // u32 weight per second
+  duration: number; // u32 seconds
+}
+
+export type EmissionPreset =
+  | "flat"
+  | "frontloaded"
+  | "backloaded"
+  | "linear-decay";
+
+// Shape posted to backend /api/auctions/build-init-tx. Decimals + Q64 scaling
+// happen server-side from mint metadata; frontend sends human-readable decimals.
+export interface InitializeAuctionParamsInput {
+  totalSupply: string;            // decimal, e.g. "1000000"
+  startTime: number;              // unix seconds
+  endTime: number;
+  claimTime: number;
+  tickSpacing: number;            // integer, >= 2
+  floorPrice: string;             // decimal, e.g. "0.40"
+  requiredCurrencyRaised: string; // decimal in currency units
+  tokensRecipient: string;        // base58 wallet
+  fundsRecipient: string;         // base58 wallet
+  steps: AuctionStepInput[];
+}
+
+export interface AuctionMetadataInput {
+  tokenName: string;
+  tokenSymbol: string;
+  tokenTagline?: string;
+  tokenDescription?: string;
+  tokenIconUrl?: string;
+}
+
+export interface CreateAuctionPayload {
+  creator: string;      // base58
+  tokenMint: string;    // base58
+  currencyMint: string; // base58
+  preset: EmissionPreset;
+  params: InitializeAuctionParamsInput;
+  metadata: AuctionMetadataInput;
+}
+
 // ---- websocket events ----
 
 export type WsEvent =
