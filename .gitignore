@@ -1,3 +1,4 @@
 backend/target
 **/node_modules
 .notes
+**/.env
