@@ -5,7 +5,9 @@ mod config;
 mod crank;
 mod db;
 mod indexer;
+mod init_tx;
 mod rpc;
+mod tx_utils;
 mod ws;
 
 use axum::routing::get;
@@ -18,7 +20,10 @@ use tracing_subscriber::{fmt, EnvFilter};
 async fn main() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
     fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("backend=info,tower_http=info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("backend=info,tower_http=info")),
+        )
         .init();
 
     let cfg = config::Config::from_env();
@@ -66,14 +71,30 @@ async fn main() -> anyhow::Result<()> {
     let api_router = Router::new()
         .route("/auctions", get(api::list_auctions))
         .route("/auctions/:address", get(api::get_auction))
-        .route("/auctions/:address/price-history", get(api::get_price_history))
+        .route(
+            "/auctions/:address/price-history",
+            get(api::get_price_history),
+        )
         .route("/auctions/:address/bid-book", get(api::get_bid_book))
         .route("/auctions/:address/bids", get(api::get_auction_bids))
-        .route("/auctions/:address/metadata", axum::routing::post(api::set_metadata))
-        .route("/auctions/:address/bid/build-tx", axum::routing::post(bid_tx::build_bid_tx))
+        .route(
+            "/auctions/build-init-tx",
+            axum::routing::post(init_tx::build_init_tx),
+        )
+        .route(
+            "/auctions/:address/metadata",
+            axum::routing::post(api::set_metadata),
+        )
+        .route(
+            "/auctions/:address/bid/build-tx",
+            axum::routing::post(bid_tx::build_bid_tx),
+        )
         .route("/users/:wallet/bids", get(api::get_user_bids))
         .route("/users/:wallet/auctions", get(api::get_user_auctions))
-        .route("/users/:wallet/connect", axum::routing::post(api::wallet_connect))
+        .route(
+            "/users/:wallet/connect",
+            axum::routing::post(api::wallet_connect),
+        )
         .route("/health", get(api::health))
         .with_state(api_state);
 

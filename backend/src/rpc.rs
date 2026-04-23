@@ -16,6 +16,12 @@ pub struct ProgramAccount {
     pub data: Vec<u8>,
 }
 
+#[derive(Debug, Clone)]
+pub struct TokenAccountInfo {
+    pub pubkey: String,
+    pub amount: u64,
+}
+
 #[derive(Debug, Deserialize)]
 struct RpcResp {
     #[serde(default)]
@@ -90,7 +96,10 @@ impl RpcClient {
                 .decode(b64)
                 .unwrap_or_default();
             if !pubkey.is_empty() && !bytes.is_empty() {
-                out.push(ProgramAccount { pubkey, data: bytes });
+                out.push(ProgramAccount {
+                    pubkey,
+                    data: bytes,
+                });
             }
         }
         Ok(out)
@@ -103,7 +112,14 @@ impl RpcClient {
             "method": "getLatestBlockhash",
             "params": [{ "commitment": "confirmed" }]
         });
-        let resp: RpcResp = self.http.post(&self.url).json(&body).send().await?.json().await?;
+        let resp: RpcResp = self
+            .http
+            .post(&self.url)
+            .json(&body)
+            .send()
+            .await?
+            .json()
+            .await?;
         if let Some(err) = resp.error {
             anyhow::bail!("rpc error: {err}");
         }
@@ -124,7 +140,14 @@ impl RpcClient {
             "method": "sendTransaction",
             "params": [b64, { "encoding": "base64", "skipPreflight": false, "preflightCommitment": "processed" }]
         });
-        let resp: RpcResp = self.http.post(&self.url).json(&body).send().await?.json().await?;
+        let resp: RpcResp = self
+            .http
+            .post(&self.url)
+            .json(&body)
+            .send()
+            .await?
+            .json()
+            .await?;
         if let Some(err) = resp.error {
             anyhow::bail!("sendTransaction error: {err}");
         }
@@ -142,7 +165,14 @@ impl RpcClient {
             "method": "getAccountInfo",
             "params": [pubkey, { "encoding": "base64", "commitment": "confirmed" }]
         });
-        let resp: RpcResp = self.http.post(&self.url).json(&body).send().await?.json().await?;
+        let resp: RpcResp = self
+            .http
+            .post(&self.url)
+            .json(&body)
+            .send()
+            .await?
+            .json()
+            .await?;
         if let Some(err) = resp.error {
             anyhow::bail!("rpc error: {err}");
         }
@@ -161,5 +191,67 @@ impl RpcClient {
                 .decode(b64)
                 .unwrap_or_default(),
         ))
+    }
+
+    pub async fn get_token_accounts_by_owner_and_mint(
+        &self,
+        owner: &str,
+        mint: &str,
+    ) -> anyhow::Result<Vec<TokenAccountInfo>> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getTokenAccountsByOwner",
+            "params": [
+                owner,
+                { "mint": mint },
+                { "encoding": "base64", "commitment": "confirmed" }
+            ]
+        });
+        let resp: RpcResp = self
+            .http
+            .post(&self.url)
+            .json(&body)
+            .send()
+            .await?
+            .json()
+            .await?;
+        if let Some(err) = resp.error {
+            anyhow::bail!("rpc error: {err}");
+        }
+        let items = resp
+            .result
+            .and_then(|r| r.get("value").cloned())
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default();
+
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            let pubkey = item
+                .get("pubkey")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let data_arr = item
+                .get("account")
+                .and_then(|a| a.get("data"))
+                .and_then(|d| d.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let b64 = data_arr.first().and_then(|v| v.as_str()).unwrap_or("");
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .unwrap_or_default();
+            if pubkey.is_empty() || bytes.len() < 72 {
+                continue;
+            }
+            let mut amount_bytes = [0u8; 8];
+            amount_bytes.copy_from_slice(&bytes[64..72]);
+            out.push(TokenAccountInfo {
+                pubkey,
+                amount: u64::from_le_bytes(amount_bytes),
+            });
+        }
+        Ok(out)
     }
 }

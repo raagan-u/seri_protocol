@@ -7,13 +7,16 @@
 use crate::accounts::{discriminator, pubkey_to_base58, strip_discriminator, TickAccount};
 use crate::api::ApiState;
 use crate::rpc::RpcClient;
+use crate::tx_utils::{
+    bs58_to_hash, create_ata_idempotent_ix, decimal_to_q64, decimal_to_u64_scaled, derive_ata,
+    system_program_id, token_program_id,
+};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 use base64::Engine;
 use borsh::BorshDeserialize;
 use serde::{Deserialize, Serialize};
-use solana_sdk::hash::Hash;
 use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::message::Message;
 use solana_sdk::pubkey::Pubkey;
@@ -23,10 +26,6 @@ use sqlx::Row;
 use std::str::FromStr;
 
 const SUBMIT_BID_DISCRIMINATOR: [u8; 8] = [19, 164, 237, 254, 64, 139, 237, 93];
-
-const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-const ATA_PROGRAM_ID: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
-const SYSTEM_PROGRAM_ID_BYTES: [u8; 32] = [0u8; 32];
 const USDC_DECIMALS: u32 = 6;
 
 #[derive(Deserialize)]
@@ -53,10 +52,13 @@ pub async fn build_bid_tx(
     Path(auction_addr): Path<String>,
     Json(body): Json<BuildBidTxBody>,
 ) -> Result<Json<BuildBidTxResponse>, (StatusCode, String)> {
-    build_inner(&s, &auction_addr, body).await.map(Json).map_err(|e| {
-        tracing::warn!("build_bid_tx failed for {auction_addr}: {e:#}");
-        (StatusCode::BAD_REQUEST, e.to_string())
-    })
+    build_inner(&s, &auction_addr, body)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            tracing::warn!("build_bid_tx failed for {auction_addr}: {e:#}");
+            (StatusCode::BAD_REQUEST, e.to_string())
+        })
 }
 
 async fn build_inner(
@@ -98,7 +100,10 @@ async fn build_inner(
         max_price > clearing_price,
         "max_price must be strictly greater than clearing_price"
     );
-    anyhow::ensure!(max_price <= max_bid_price, "max_price exceeds max_bid_price");
+    anyhow::ensure!(
+        max_price <= max_bid_price,
+        "max_price exceeds max_bid_price"
+    );
     anyhow::ensure!(
         max_price == floor_price || (tick_spacing > 0 && max_price % tick_spacing == 0),
         "max_price does not align to tick_spacing"
@@ -125,13 +130,21 @@ async fn build_inner(
         .await?;
     let mut best: Option<(u128, Pubkey)> = None;
     for acc in &all_ticks {
-        let Some(body) = strip_discriminator(&acc.data, &tick_disc) else { continue };
-        let Ok(parsed) = TickAccount::try_from_slice(body) else { continue };
+        let Some(body) = strip_discriminator(&acc.data, &tick_disc) else {
+            continue;
+        };
+        let Ok(parsed) = TickAccount::try_from_slice(body) else {
+            continue;
+        };
         if pubkey_to_base58(&parsed.auction) != auction_addr {
             continue;
         }
         if parsed.price < max_price {
-            if best.as_ref().map(|(p, _)| parsed.price > *p).unwrap_or(true) {
+            if best
+                .as_ref()
+                .map(|(p, _)| parsed.price > *p)
+                .unwrap_or(true)
+            {
                 best = Some((parsed.price, Pubkey::from_str(&acc.pubkey)?));
             }
         }
@@ -167,22 +180,22 @@ async fn build_inner(
     data.extend_from_slice(&prev_tick_price.to_le_bytes());
     data.extend_from_slice(&now.to_le_bytes());
 
-    let token_program = Pubkey::from_str(TOKEN_PROGRAM_ID)?;
-    let system_program = Pubkey::new_from_array(SYSTEM_PROGRAM_ID_BYTES);
+    let token_program = token_program_id()?;
+    let system_program = system_program_id();
 
     let submit_bid_ix = Instruction {
         program_id,
         accounts: vec![
-            AccountMeta::new(bidder, true),                   // bidder (signer, writable)
-            AccountMeta::new(auction, false),                  // auction
-            AccountMeta::new(bid_pda, false),                  // bid
-            AccountMeta::new(tick_pda, false),                 // tick
-            AccountMeta::new(prev_tick_pda, false),            // prev_tick
-            AccountMeta::new(latest_checkpoint, false),        // latest_checkpoint
-            AccountMeta::new(new_checkpoint_pda, false),       // new_checkpoint
+            AccountMeta::new(bidder, true),         // bidder (signer, writable)
+            AccountMeta::new(auction, false),       // auction
+            AccountMeta::new(bid_pda, false),       // bid
+            AccountMeta::new(tick_pda, false),      // tick
+            AccountMeta::new(prev_tick_pda, false), // prev_tick
+            AccountMeta::new(latest_checkpoint, false), // latest_checkpoint
+            AccountMeta::new(new_checkpoint_pda, false), // new_checkpoint
             AccountMeta::new_readonly(auction_steps_pda, false),
-            AccountMeta::new(bidder_currency_ata, false),      // bidder_currency_account
-            AccountMeta::new(currency_vault, false),           // currency_vault
+            AccountMeta::new(bidder_currency_ata, false), // bidder_currency_account
+            AccountMeta::new(currency_vault, false),      // currency_vault
             AccountMeta::new_readonly(token_program, false),
             AccountMeta::new_readonly(system_program, false),
             AccountMeta::new_readonly(sysvar::rent::id(), false),
@@ -198,7 +211,8 @@ async fn build_inner(
 
     let blockhash_str = rpc.get_latest_blockhash().await?;
     let blockhash = bs58_to_hash(&blockhash_str)?;
-    let msg = Message::new_with_blockhash(&[create_ata_ix, submit_bid_ix], Some(&bidder), &blockhash);
+    let msg =
+        Message::new_with_blockhash(&[create_ata_ix, submit_bid_ix], Some(&bidder), &blockhash);
     let tx = Transaction::new_unsigned(msg);
     let bytes = bincode::serialize(&tx)?;
 
@@ -213,114 +227,9 @@ fn derive_currency_vault(auction: &Pubkey, program_id: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[b"currency_vault", auction.as_ref()], program_id).0
 }
 
-fn derive_ata(owner: &Pubkey, mint: &Pubkey) -> Pubkey {
-    let token_program = Pubkey::from_str(TOKEN_PROGRAM_ID).expect("const pubkey");
-    let ata_program = Pubkey::from_str(ATA_PROGRAM_ID).expect("const pubkey");
-    Pubkey::find_program_address(
-        &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
-        &ata_program,
-    )
-    .0
-}
-
-fn create_ata_idempotent_ix(
-    payer: &Pubkey,
-    ata: &Pubkey,
-    owner: &Pubkey,
-    mint: &Pubkey,
-) -> anyhow::Result<Instruction> {
-    let token_program = Pubkey::from_str(TOKEN_PROGRAM_ID)?;
-    let ata_program = Pubkey::from_str(ATA_PROGRAM_ID)?;
-    let system_program = Pubkey::new_from_array(SYSTEM_PROGRAM_ID_BYTES);
-    Ok(Instruction {
-        program_id: ata_program,
-        accounts: vec![
-            AccountMeta::new(*payer, true),
-            AccountMeta::new(*ata, false),
-            AccountMeta::new_readonly(*owner, false),
-            AccountMeta::new_readonly(*mint, false),
-            AccountMeta::new_readonly(system_program, false),
-            AccountMeta::new_readonly(token_program, false),
-        ],
-        data: vec![1u8], // create_idempotent
-    })
-}
-
-fn bs58_to_hash(s: &str) -> anyhow::Result<Hash> {
-    let bytes = bs58::decode(s).into_vec()?;
-    anyhow::ensure!(bytes.len() == 32, "bad blockhash length");
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&bytes);
-    Ok(Hash::new_from_array(arr))
-}
-
-/// Parse a decimal string like "0.40" into a Q64.64 u128 fixed-point value.
-fn decimal_to_q64(s: &str) -> anyhow::Result<u128> {
-    let s = s.trim();
-    anyhow::ensure!(!s.is_empty(), "empty decimal");
-    let (int_part, frac_part) = match s.find('.') {
-        Some(i) => (&s[..i], &s[i + 1..]),
-        None => (s, ""),
-    };
-    let int: u128 = if int_part.is_empty() { 0 } else { int_part.parse()? };
-    let mut q64 = int
-        .checked_shl(64)
-        .ok_or_else(|| anyhow::anyhow!("decimal integer part overflows u128"))?;
-    if !frac_part.is_empty() {
-        let frac_digits = frac_part.len() as u32;
-        anyhow::ensure!(frac_digits <= 18, "too many fractional digits");
-        let frac_num: u128 = frac_part.parse()?;
-        let frac_den: u128 = 10u128.pow(frac_digits);
-        let frac_q64 = frac_num
-            .checked_shl(64)
-            .ok_or_else(|| anyhow::anyhow!("decimal fractional part overflows"))?
-            / frac_den;
-        q64 = q64
-            .checked_add(frac_q64)
-            .ok_or_else(|| anyhow::anyhow!("decimal sum overflows u128"))?;
-    }
-    Ok(q64)
-}
-
-/// Parse a decimal string like "1000.5" into the scaled u64 (value * 10^decimals).
-fn decimal_to_u64_scaled(s: &str, decimals: u32) -> anyhow::Result<u64> {
-    let s = s.trim();
-    anyhow::ensure!(!s.is_empty(), "empty decimal");
-    let (int_part, frac_part) = match s.find('.') {
-        Some(i) => (&s[..i], &s[i + 1..]),
-        None => (s, ""),
-    };
-    let int: u128 = if int_part.is_empty() { 0 } else { int_part.parse()? };
-    let frac_digits = frac_part.len() as u32;
-    let mut frac: u128 = if frac_part.is_empty() { 0 } else { frac_part.parse()? };
-    // Pad or truncate frac to `decimals` digits.
-    if frac_digits < decimals {
-        frac = frac
-            .checked_mul(10u128.pow(decimals - frac_digits))
-            .ok_or_else(|| anyhow::anyhow!("overflow"))?;
-    } else if frac_digits > decimals {
-        frac /= 10u128.pow(frac_digits - decimals);
-    }
-    let scale = 10u128.pow(decimals);
-    let total = int
-        .checked_mul(scale)
-        .and_then(|v| v.checked_add(frac))
-        .ok_or_else(|| anyhow::anyhow!("amount overflows u64"))?;
-    anyhow::ensure!(total <= u64::MAX as u128, "amount overflows u64");
-    Ok(total as u64)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn q64_conversion_roundtrip() {
-        let q = decimal_to_q64("0.5").unwrap();
-        assert_eq!(q, 1u128 << 63);
-        let q = decimal_to_q64("1").unwrap();
-        assert_eq!(q, 1u128 << 64);
-    }
 
     #[test]
     fn u64_scaled_basic() {
