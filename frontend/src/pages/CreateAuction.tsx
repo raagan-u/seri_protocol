@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from "react";
+import { Transaction } from "@solana/web3.js";
 import { Button, Card, Label } from "../components/primitives";
 import { ConnectButton } from "../components/ConnectButton";
-import { buildInitTx } from "../api/client";
+import { buildInitTx, persistAuctionMetadata, type AuctionMetadataBody } from "../api/client";
 import type {
   AuctionStepInput,
   CreateAuctionPayload,
   EmissionPreset,
   InitializeAuctionParamsInput,
 } from "../api/types";
+import { useWallet } from "../hooks/useWallet";
 
 // ---- preset → steps math ---------------------------------------------------
 
@@ -222,26 +224,40 @@ function buildPayload(f: FormState, creator: string): CreateAuctionPayload {
   };
 }
 
+function toMetadataBody(payload: CreateAuctionPayload): AuctionMetadataBody {
+  return {
+    token_name: payload.metadata.tokenName,
+    token_symbol: payload.metadata.tokenSymbol,
+    token_tagline: payload.metadata.tokenTagline,
+    token_icon_url: payload.metadata.tokenIconUrl,
+    description: payload.metadata.tokenDescription,
+  };
+}
+
 // ---- page ------------------------------------------------------------------
 
-type SubmitState = "idle" | "building" | "payload-logged" | "tx-ready" | "error";
+type SubmitState = "idle" | "building" | "signing" | "syncing" | "success" | "error";
 
 export function CreateAuction({ wallet }: { wallet: string | null }) {
+  const { publicKey, isConnected, signAndSendTransaction } = useWallet();
   const [form, setForm] = useState<FormState>(BLANK);
   const [errors, setErrors] = useState<Errors>({});
   const [touched, setTouched] = useState<Partial<Record<keyof FormState, true>>>({});
   const [submit, setSubmit] = useState<SubmitState>("idle");
   const [errMsg, setErrMsg] = useState<string | null>(null);
+  const [auctionPda, setAuctionPda] = useState<string | null>(null);
+  const [txSig, setTxSig] = useState<string | null>(null);
+  const effectiveWallet = publicKey ?? wallet;
 
   // Pre-fill recipients from connected wallet (one-shot when wallet first appears)
   useEffect(() => {
-    if (!wallet) return;
+    if (!effectiveWallet) return;
     setForm((f) => ({
       ...f,
-      fundsRecipient: f.fundsRecipient || wallet,
-      tokensRecipient: f.tokensRecipient || wallet,
+      fundsRecipient: f.fundsRecipient || effectiveWallet,
+      tokensRecipient: f.tokensRecipient || effectiveWallet,
     }));
-  }, [wallet]);
+  }, [effectiveWallet]);
 
   const set = <K extends keyof FormState>(k: K) => (v: FormState[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
@@ -266,29 +282,56 @@ export function CreateAuction({ wallet }: { wallet: string | null }) {
       }, {}) as Partial<Record<keyof FormState, true>>
     );
     if (Object.keys(e).length) return;
-    if (!wallet) return;
+    if (!publicKey || !isConnected) {
+      setErrMsg("Connect Phantom to sign the initialize transaction.");
+      setSubmit("error");
+      return;
+    }
 
-    const payload = buildPayload(form, wallet);
+    const payload = buildPayload(form, publicKey);
     setSubmit("building");
     setErrMsg(null);
+    setAuctionPda(null);
+    setTxSig(null);
     try {
       const resp = await buildInitTx(payload);
-      if (resp) {
-        setSubmit("tx-ready");
-      } else {
-        console.log("[create-auction] build-init-tx payload (no response):", payload);
-        setSubmit("payload-logged");
+      setAuctionPda(resp.auctionPda);
+      setSubmit("signing");
+
+      const raw = Uint8Array.from(atob(resp.tx), (c) => c.charCodeAt(0));
+      const transaction = Transaction.from(raw);
+      const { signature } = await signAndSendTransaction(transaction);
+      console.info("initialize_auction signature:", signature);
+
+      setTxSig(signature);
+      setSubmit("syncing");
+      const metadataOk = await persistAuctionMetadata(
+        resp.auctionPda,
+        toMetadataBody(payload)
+      );
+
+      if (!metadataOk) {
+        setErrMsg(
+          "Transaction sent, but the backend indexer has not exposed the new auction yet. You can open it manually in a few seconds."
+        );
+        setSubmit("error");
+        return;
       }
+
+      setSubmit("success");
+      window.location.search = `?auction=${resp.auctionPda}`;
     } catch (err) {
-      console.log("[create-auction] build-init-tx payload:", payload);
-      console.log("[create-auction] build-init-tx error:", err);
       setErrMsg(err instanceof Error ? err.message : String(err));
-      setSubmit("payload-logged");
+      setSubmit("error");
     }
   };
 
   const canSubmit =
-    Boolean(wallet) && submit !== "building" && submit !== "tx-ready";
+    Boolean(publicKey && isConnected) &&
+    submit !== "building" &&
+    submit !== "signing" &&
+    submit !== "syncing" &&
+    !txSig;
 
   return (
     <div
@@ -504,23 +547,44 @@ export function CreateAuction({ wallet }: { wallet: string | null }) {
         </Section>
 
         {/* Banners */}
-        {!wallet && (
+        {!publicKey && (
           <Banner tone="warn">
             Connect a wallet to create an auction. Your address will auto-fill
             the recipient fields.
           </Banner>
         )}
-        {submit === "payload-logged" && (
+        {submit === "error" && (
           <Banner tone="warn">
-            Backend build-init-tx endpoint is not wired yet. Payload has been
-            logged to the console so you can sign and submit manually.
+            {txSig
+              ? "Auction transaction was sent, but the backend is still catching up."
+              : "Create auction failed before the transaction could be sent."}
+            {auctionPda && (
+              <div style={{ marginTop: 6, opacity: 0.9 }}>
+                Auction PDA: <span style={{ fontFamily: "monospace" }}>{auctionPda}</span>
+              </div>
+            )}
+            {txSig && (
+              <div style={{ marginTop: 6, opacity: 0.9 }}>
+                Signature: <span style={{ fontFamily: "monospace" }}>{txSig}</span>
+              </div>
+            )}
             {errMsg && <div style={{ marginTop: 6, opacity: 0.8 }}>{errMsg}</div>}
           </Banner>
         )}
-        {submit === "tx-ready" && (
+        {submit === "signing" && (
           <Banner tone="accent">
-            Transaction built. Signing step is not wired yet — see console for
-            the response payload.
+            Transaction built. Approve the initialize transaction in Phantom.
+          </Banner>
+        )}
+        {submit === "syncing" && (
+          <Banner tone="accent">
+            Transaction sent. Waiting for the backend indexer so metadata can be
+            attached before redirecting.
+          </Banner>
+        )}
+        {submit === "success" && (
+          <Banner tone="accent">
+            Auction submitted. Redirecting to the auction detail page…
           </Banner>
         )}
 
@@ -531,8 +595,25 @@ export function CreateAuction({ wallet }: { wallet: string | null }) {
             onClick={handleSubmit}
             disabled={!canSubmit}
           >
-            {submit === "building" ? "Building transaction…" : "Create auction"}
+            {submit === "building"
+              ? "Building transaction…"
+              : submit === "signing"
+                ? "Approve in Phantom…"
+                : submit === "syncing"
+                  ? "Waiting for indexer…"
+                  : "Create auction"}
           </Button>
+          {auctionPda && (
+            <Button
+              variant="ghost"
+              size="lg"
+              onClick={() => {
+                window.location.search = `?auction=${auctionPda}`;
+              }}
+            >
+              Open auction
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="lg"

@@ -98,18 +98,19 @@ export type EmissionPreset =
   | "backloaded"
   | "linear-decay";
 
-// Shape posted to backend /api/auctions/build-init-tx. Decimals + Q64 scaling
-// happen server-side from mint metadata; frontend sends human-readable decimals.
+// Shape posted to backend /api/auctions/build-init-tx. The backend builds the
+// unsigned initialize transaction; the frontend sends human-readable form
+// values and step config.
 export interface InitializeAuctionParamsInput {
-  totalSupply: string;            // decimal, e.g. "1000000"
-  startTime: number;              // unix seconds
+  totalSupply: string; // form value, e.g. "1000000"
+  startTime: number; // unix seconds
   endTime: number;
   claimTime: number;
-  tickSpacing: number;            // integer, >= 2
-  floorPrice: string;             // decimal, e.g. "0.40"
-  requiredCurrencyRaised: string; // decimal in currency units
-  tokensRecipient: string;        // base58 wallet
-  fundsRecipient: string;         // base58 wallet
+  tickSpacing: number; // integer, >= 2
+  floorPrice: string; // decimal, e.g. "0.40"
+  requiredCurrencyRaised: string; // form value in currency units
+  tokensRecipient: string; // base58 wallet
+  fundsRecipient: string; // base58 wallet
   steps: AuctionStepInput[];
 }
 

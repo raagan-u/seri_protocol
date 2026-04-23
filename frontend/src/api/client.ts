@@ -84,37 +84,39 @@ export async function buildBidTx(
 }
 
 export interface BuildInitTxResponse {
-  tx: string;            // base64-encoded unsigned transaction
-  auctionPda: string;    // derived auction PDA (for redirects)
+  tx: string; // base64-encoded unsigned transaction
+  auctionPda: string; // derived auction PDA (for redirects)
   tokenVault: string;
   currencyVault: string;
+  creatorTokenAccount: string;
 }
 
-// Posts the create-auction form payload to the backend's future build-init-tx
-// endpoint. Returns null when the endpoint responds non-OK so the caller can
-// gracefully fall back (the endpoint isn't implemented yet — signing wiring is
-// deferred).
 export async function buildInitTx(
   payload: CreateAuctionPayload
-): Promise<BuildInitTxResponse | null> {
+): Promise<BuildInitTxResponse> {
   const r = await fetch(`${API_BASE}/api/auctions/build-init-tx`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!r.ok) return null;
+  if (!r.ok) {
+    const msg = await r.text().catch(() => "build-init-tx failed");
+    throw new Error(msg || `build-init-tx failed (${r.status})`);
+  }
   return (await r.json()) as BuildInitTxResponse;
+}
+
+export interface AuctionMetadataBody {
+  token_name?: string;
+  token_symbol?: string;
+  token_tagline?: string;
+  token_icon_url?: string;
+  description?: string;
 }
 
 export async function setAuctionMetadata(
   address: string,
-  body: {
-    token_name?: string;
-    token_symbol?: string;
-    token_tagline?: string;
-    token_icon_url?: string;
-    description?: string;
-  }
+  body: AuctionMetadataBody
 ): Promise<boolean> {
   try {
     const r = await fetch(`${API_BASE}/api/auctions/${address}/metadata`, {
@@ -126,6 +128,26 @@ export async function setAuctionMetadata(
   } catch {
     return false;
   }
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+export async function persistAuctionMetadata(
+  address: string,
+  body: AuctionMetadataBody,
+  options?: { attempts?: number; delayMs?: number }
+): Promise<boolean> {
+  const attempts = options?.attempts ?? 15;
+  const delayMs = options?.delayMs ?? 1000;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (await setAuctionMetadata(address, body)) return true;
+    if (attempt < attempts - 1) {
+      await wait(delayMs);
+    }
+  }
+  return false;
 }
 
 export async function fetchPriceHistory(address: string): Promise<PricePoint[]> {
