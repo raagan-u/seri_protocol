@@ -17,7 +17,7 @@ use solana_sdk::sysvar;
 use solana_sdk::transaction::Transaction;
 use std::str::FromStr;
 
-const INITIALIZE_AUCTION_DISCRIMINATOR: [u8; 8] = [66, 23, 27, 85, 188, 0, 109, 101];
+const INITIALIZE_AUCTION_DISCRIMINATOR: [u8; 8] = [37, 10, 117, 197, 208, 88, 117, 62];
 const MPS_TOTAL: u64 = 10_000_000;
 const MIN_TICK_SPACING: u64 = 2;
 
