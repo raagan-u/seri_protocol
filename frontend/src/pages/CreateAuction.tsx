@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import { Transaction } from "@solana/web3.js";
 import { Button, Card, Label } from "../components/primitives";
 import { ConnectButton } from "../components/ConnectButton";
@@ -141,6 +141,11 @@ function toUnix(dtLocal: string): number {
   // datetime-local is interpreted in the user's local tz; Date parses it that way.
   const ms = new Date(dtLocal).getTime();
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : NaN;
+}
+
+function toDatetimeLocal(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 type Errors = Partial<Record<keyof FormState | "steps", string>>;
@@ -432,16 +437,14 @@ export function CreateAuction({ wallet }: { wallet: string | null }) {
         <Section title="Schedule">
           <Row>
             <Field label="Start" err={touched.startTime ? errors.startTime : undefined}>
-              <Input
-                type="datetime-local"
+              <DateTimeInput
                 value={form.startTime}
                 onChange={(v) => set("startTime")(v)}
                 onBlur={() => markTouched("startTime")}
               />
             </Field>
             <Field label="End" err={touched.endTime ? errors.endTime : undefined}>
-              <Input
-                type="datetime-local"
+              <DateTimeInput
                 value={form.endTime}
                 onChange={(v) => set("endTime")(v)}
                 onBlur={() => markTouched("endTime")}
@@ -449,8 +452,7 @@ export function CreateAuction({ wallet }: { wallet: string | null }) {
             </Field>
           </Row>
           <Field label="Claim opens" err={touched.claimTime ? errors.claimTime : undefined}>
-            <Input
-              type="datetime-local"
+            <DateTimeInput
               value={form.claimTime}
               onChange={(v) => set("claimTime")(v)}
               onBlur={() => markTouched("claimTime")}
@@ -875,4 +877,241 @@ function humanDur(sec: number): string {
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+// ---- DateTimeInput ---------------------------------------------------------
+
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+const DAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+
+function DateTimeInput({
+  value,
+  onChange,
+  onBlur,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onBlur?: () => void;
+}) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+
+  const selected = useMemo<Date | null>(() => {
+    if (!value) return null;
+    const d = new Date(value);
+    return isNaN(d.getTime()) ? null : d;
+  }, [value]);
+
+  const [viewDate, setViewDate] = useState<Date>(() => {
+    const base = selected ?? new Date();
+    return new Date(base.getFullYear(), base.getMonth(), 1);
+  });
+
+  const vy = viewDate.getFullYear();
+  const vm = viewDate.getMonth();
+
+  const timeStr = selected
+    ? `${String(selected.getHours()).padStart(2, "0")}:${String(selected.getMinutes()).padStart(2, "0")}`
+    : "00:00";
+
+  const cells = useMemo(() => {
+    const firstDow = new Date(vy, vm, 1).getDay();
+    const daysInMonth = new Date(vy, vm + 1, 0).getDate();
+    const prevDays = new Date(vy, vm, 0).getDate();
+    const result: { day: number; offset: -1 | 0 | 1 }[] = [];
+    for (let i = 0; i < firstDow; i++)
+      result.push({ day: prevDays - firstDow + 1 + i, offset: -1 });
+    for (let d = 1; d <= daysInMonth; d++)
+      result.push({ day: d, offset: 0 });
+    const trailing = (7 - (result.length % 7)) % 7;
+    for (let d = 1; d <= trailing; d++)
+      result.push({ day: d, offset: 1 });
+    return result;
+  }, [vy, vm]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handle = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        onBlur?.();
+      }
+    };
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [open, onBlur]);
+
+  const openCalendar = () => {
+    if (selected) setViewDate(new Date(selected.getFullYear(), selected.getMonth(), 1));
+    setOpen((o) => !o);
+  };
+
+  const pickDay = (day: number, offset: -1 | 0 | 1) => {
+    let y = vy;
+    let m = vm + offset;
+    if (m < 0) { m = 11; y--; }
+    if (m > 11) { m = 0; y++; }
+    const [hh, mm] = timeStr.split(":").map(Number);
+    onChange(toDatetimeLocal(new Date(y, m, day, hh, mm)));
+    if (offset !== 0) setViewDate(new Date(y, m, 1));
+  };
+
+  const pickTime = (t: string) => {
+    const base = selected ?? new Date(vy, vm, 1);
+    const [hh, mm] = (t || "00:00").split(":").map(Number);
+    onChange(toDatetimeLocal(new Date(base.getFullYear(), base.getMonth(), base.getDate(), hh || 0, mm || 0)));
+  };
+
+  const prevMonth = () => setViewDate((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1));
+  const nextMonth = () => setViewDate((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1));
+
+  const display = selected
+    ? `${selected.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}  ${timeStr}`
+    : "";
+
+  const now = new Date();
+  const navBtn = {
+    background: "transparent",
+    border: "none",
+    color: "var(--text-2)",
+    fontSize: 20,
+    cursor: "pointer",
+    padding: "0 6px",
+    lineHeight: 1,
+  } as const;
+
+  return (
+    <div ref={rootRef} style={{ position: "relative" }}>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={openCalendar}
+        onKeyDown={(e) => e.key === "Enter" && openCalendar()}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          background: "var(--bg)",
+          border: `1px solid ${open ? "var(--border-strong)" : "var(--border)"}`,
+          borderRadius: 8,
+          padding: "0 12px",
+          height: 40,
+          cursor: "pointer",
+          userSelect: "none",
+          gap: 8,
+        }}
+      >
+        <span style={{ flex: 1, fontSize: 14, color: display ? "var(--text)" : "var(--text-3)" }}>
+          {display || "Select date & time"}
+        </span>
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, opacity: 0.5 }}>
+          <rect x="1.5" y="3" width="13" height="11.5" rx="1.5" stroke="var(--text-2)" strokeWidth="1.4" />
+          <path d="M1.5 6.5h13" stroke="var(--text-2)" strokeWidth="1.4" />
+          <path d="M5 1.5v3M11 1.5v3" stroke="var(--text-2)" strokeWidth="1.4" strokeLinecap="round" />
+        </svg>
+      </div>
+
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            left: 0,
+            zIndex: 100,
+            background: "var(--bg-raised)",
+            border: "1px solid var(--border-strong)",
+            borderRadius: 12,
+            padding: "14px 14px 12px",
+            width: 252,
+            boxShadow: "0 12px 40px rgba(0,0,0,0.5)",
+            animation: "seriFadeIn 0.1s ease",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
+            <button type="button" onClick={prevMonth} style={navBtn}>‹</button>
+            <span style={{ flex: 1, textAlign: "center", fontSize: 13, fontWeight: 500, color: "var(--text)" }}>
+              {MONTH_NAMES[vm]} {vy}
+            </span>
+            <button type="button" onClick={nextMonth} style={navBtn}>›</button>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)" }}>
+            {DAY_LABELS.map((l) => (
+              <div key={l} style={{ textAlign: "center", fontSize: 10, color: "var(--text-3)", paddingBottom: 6, letterSpacing: "0.05em" }}>
+                {l}
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 1 }}>
+            {cells.map((cell, i) => {
+              const isCur = cell.offset === 0;
+              const isSel =
+                isCur &&
+                selected !== null &&
+                selected.getDate() === cell.day &&
+                selected.getMonth() === vm &&
+                selected.getFullYear() === vy;
+              const isToday =
+                isCur &&
+                now.getDate() === cell.day &&
+                now.getMonth() === vm &&
+                now.getFullYear() === vy;
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => pickDay(cell.day, cell.offset)}
+                  style={{
+                    height: 28,
+                    borderRadius: 5,
+                    fontSize: 12,
+                    border: isToday && !isSel ? "1px solid var(--border-strong)" : "1px solid transparent",
+                    background: isSel ? "var(--accent)" : "transparent",
+                    color: isSel ? "#0a0b0e" : isCur ? "var(--text)" : "var(--text-3)",
+                    fontWeight: isSel ? 600 : 400,
+                    cursor: "pointer",
+                    padding: 0,
+                  }}
+                >
+                  {cell.day}
+                </button>
+              );
+            })}
+          </div>
+
+          <div
+            style={{
+              marginTop: 12,
+              paddingTop: 12,
+              borderTop: "1px solid var(--border)",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <span style={{ fontSize: 12, color: "var(--text-3)", flex: 1 }}>Time</span>
+            <input
+              type="time"
+              value={timeStr}
+              onChange={(e) => pickTime(e.target.value)}
+              style={{
+                background: "var(--bg)",
+                border: "1px solid var(--border)",
+                borderRadius: 6,
+                padding: "4px 8px",
+                color: "var(--text)",
+                fontSize: 12,
+                fontFamily: "inherit",
+                outline: "none",
+                colorScheme: "dark",
+              }}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
