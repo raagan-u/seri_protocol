@@ -17,11 +17,17 @@ export function BidStatusCard({
   bid,
   clearingPrice,
   requiredRaise,
+  onExit,
+  onClaim,
+  busy,
 }: {
   mode: BidCardMode;
   bid: Bid | null;
   clearingPrice: number;
   requiredRaise: number;
+  onExit?: () => void;
+  onClaim?: () => void;
+  busy?: boolean;
 }) {
   if (mode === "none" || !bid) return null;
 
@@ -174,11 +180,14 @@ export function BidStatusCard({
           <Stat label="Refund (est.)" value={fmtCurrency(estRefund, "USDC", 0)} />
         </div>
         <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-          <Button variant="ghost" size="sm" style={{ flex: 1 }}>
-            Raise max
-          </Button>
-          <Button variant="ghost" size="sm" style={{ flex: 1 }}>
-            Exit partial
+          <Button
+            variant="ghost"
+            size="sm"
+            style={{ flex: 1 }}
+            onClick={onExit}
+            disabled={busy}
+          >
+            {busy ? "Exiting…" : "Exit partial"}
           </Button>
         </div>
       </Card>
@@ -223,8 +232,23 @@ export function BidStatusCard({
           />
           <Stat label="Refund" value={fmtCurrency(estRefund, "USDC", 0)} />
         </div>
-        <Button variant="primary" size="lg" full style={{ marginTop: 16 }}>
-          Claim {fmtTokens(finalTokens, 2)} AQUA
+        <Button
+          variant="primary"
+          size="lg"
+          full
+          style={{ marginTop: 16 }}
+          onClick={
+            bid.exitedTime && bid.tokensFilled > 0 ? onClaim : onExit
+          }
+          disabled={busy || (bid.exitedTime > 0 && bid.tokensFilled === 0)}
+        >
+          {busy
+            ? "Submitting…"
+            : bid.exitedTime && bid.tokensFilled > 0
+            ? `Claim ${fmtTokens(finalTokens, 2)} AQUA`
+            : bid.exitedTime
+            ? "Refunded"
+            : `Settle bid → ${fmtTokens(finalTokens, 2)} AQUA`}
         </Button>
       </Card>
     );
@@ -257,8 +281,15 @@ export function BidStatusCard({
             large
           />
         </div>
-        <Button variant="primary" size="lg" full style={{ marginTop: 16 }}>
-          Withdraw {fmtCurrency(refund, "USDC", 0)}
+        <Button
+          variant="primary"
+          size="lg"
+          full
+          style={{ marginTop: 16 }}
+          onClick={onExit}
+          disabled={busy}
+        >
+          {busy ? "Withdrawing…" : `Withdraw ${fmtCurrency(refund, "USDC", 0)}`}
         </Button>
       </Card>
     );

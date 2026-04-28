@@ -7,6 +7,10 @@ pub struct Auction {
     // Config (immutable after init)
     pub token_mint: Pubkey,
     pub currency_mint: Pubkey,
+    /// Cached from `token_mint` at init.
+    pub token_decimals: u8,
+    /// Cached from `currency_mint` at init.
+    pub currency_decimals: u8,
     pub token_vault: Pubkey,
     pub currency_vault: Pubkey,
     pub creator: Pubkey,

@@ -5,6 +5,8 @@ CREATE TABLE IF NOT EXISTS auctions (
     address         TEXT PRIMARY KEY,
     token_mint      TEXT NOT NULL,
     currency_mint   TEXT NOT NULL,
+    token_decimals  SMALLINT NOT NULL DEFAULT 0,
+    currency_decimals SMALLINT NOT NULL DEFAULT 0,
     creator         TEXT NOT NULL,
     total_supply    BIGINT NOT NULL,
     start_time      BIGINT NOT NULL,
@@ -80,3 +82,25 @@ CREATE TABLE IF NOT EXISTS price_history (
     total_cleared   TEXT NOT NULL,
     PRIMARY KEY (auction, timestamp)
 );
+
+-- Decimal-cache columns added after initial schema; safe to re-run.
+ALTER TABLE auctions ADD COLUMN IF NOT EXISTS token_decimals    SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE auctions ADD COLUMN IF NOT EXISTS currency_decimals SMALLINT NOT NULL DEFAULT 0;
+
+-- Tick eviction support (post fix #3): store the active-tick pointer + every Tick account
+-- so the crank / bid builder can compute the eviction queue off-chain.
+ALTER TABLE auctions ADD COLUMN IF NOT EXISTS next_active_tick_price TEXT NOT NULL
+    DEFAULT '340282366920938463463374607431768211455'; -- u128::MAX sentinel
+
+CREATE TABLE IF NOT EXISTS ticks (
+    address              TEXT PRIMARY KEY,
+    auction              TEXT NOT NULL,
+    price                TEXT NOT NULL,
+    next_price           TEXT NOT NULL,
+    currency_demand_q64  TEXT NOT NULL,
+
+    indexed_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticks_auction ON ticks(auction);

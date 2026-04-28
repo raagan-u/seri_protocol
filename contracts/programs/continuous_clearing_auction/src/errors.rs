@@ -50,4 +50,12 @@ pub enum CCAError {
     InvalidLastFullyFilledCheckpointHint,
     #[msg("Invalid outbid checkpoint hint")]
     InvalidOutbidCheckpointHint,
+    #[msg("Missing tick account required for eviction or at-clearing accounting")]
+    MissingTickAccount,
+    #[msg("Invalid tick account: PDA, auction, or price mismatch")]
+    InvalidTickAccount,
+    #[msg("Extra tick account passed beyond what eviction or clearing requires")]
+    ExtraTickAccount,
+    #[msg("Auction already finalized")]
+    AlreadyFinalized,
 }

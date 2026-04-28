@@ -122,6 +122,17 @@ pub fn system_program_id() -> Pubkey {
     Pubkey::new_from_array(SYSTEM_PROGRAM_ID_BYTES)
 }
 
+/// Anchor instruction discriminator: sha256("global:<name>")[..8].
+pub fn ix_discriminator(name: &str) -> [u8; 8] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(format!("global:{name}").as_bytes());
+    let h = hasher.finalize();
+    let mut out = [0u8; 8];
+    out.copy_from_slice(&h[..8]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

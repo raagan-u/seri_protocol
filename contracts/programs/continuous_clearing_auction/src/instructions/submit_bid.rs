@@ -93,9 +93,13 @@ pub struct SubmitBid<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
-pub fn handle_submit_bid(ctx: Context<SubmitBid>, params: SubmitBidParams) -> Result<()> {
+pub fn handle_submit_bid<'info>(
+    ctx: Context<'_, '_, 'info, 'info, SubmitBid<'info>>,
+    params: SubmitBidParams,
+) -> Result<()> {
     let clock = Clock::get()?;
     let now = params.now;
+    let program_id = *ctx.program_id;
     let auction = &mut ctx.accounts.auction;
 
     // params.now must be in [last_checkpointed_time, clock.unix_timestamp]
@@ -107,10 +111,6 @@ pub fn handle_submit_bid(ctx: Context<SubmitBid>, params: SubmitBidParams) -> Re
     require!(now < auction.end_time, CCAError::AuctionEnded);
     require!(params.amount > 0, CCAError::ZeroAmount);
     require!(
-        params.max_price > auction.clearing_price,
-        CCAError::BidPriceTooLow
-    );
-    require!(
         params.max_price <= auction.max_bid_price,
         CCAError::BidPriceTooHigh
     );
@@ -120,7 +120,8 @@ pub fn handle_submit_bid(ctx: Context<SubmitBid>, params: SubmitBidParams) -> Re
         CCAError::InvalidTickSpacing
     );
 
-    // Checkpoint
+    // Checkpoint runs eviction first; consumes ctx.remaining_accounts as the eviction queue
+    // (optionally followed by the post-eviction clearing tick).
     let auction_key = auction.key();
     checkpoint_at_time(
         auction,
@@ -129,7 +130,17 @@ pub fn handle_submit_bid(ctx: Context<SubmitBid>, params: SubmitBidParams) -> Re
         &mut ctx.accounts.latest_checkpoint,
         &mut ctx.accounts.new_checkpoint,
         now,
+        ctx.remaining_accounts,
+        &program_id,
     )?;
+
+    // Re-validate against the post-eviction clearing price. The reference does this implicitly
+    // via the next-iteration eviction loop pinning bids at-or-below clearing; we enforce here
+    // so a single late bid that pushed clearing past its own max can never escape unbounded.
+    require!(
+        params.max_price > auction.clearing_price,
+        CCAError::BidPriceTooLow
+    );
 
     // Create bid
     let bid = &mut ctx.accounts.bid;

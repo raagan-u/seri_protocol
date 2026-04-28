@@ -148,6 +148,8 @@ pub fn handle_initialize_auction(ctx: Context<InitializeAuction>, params: Initia
     let auction = &mut ctx.accounts.auction;
     auction.token_mint = ctx.accounts.token_mint.key();
     auction.currency_mint = ctx.accounts.currency_mint.key();
+    auction.token_decimals = ctx.accounts.token_mint.decimals;
+    auction.currency_decimals = ctx.accounts.currency_mint.decimals;
     auction.token_vault = ctx.accounts.token_vault.key();
     auction.currency_vault = ctx.accounts.currency_vault.key();
     auction.creator = ctx.accounts.creator.key();

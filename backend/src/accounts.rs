@@ -17,6 +17,8 @@ pub fn discriminator(name: &str) -> [u8; 8] {
 pub struct AuctionAccount {
     pub token_mint: [u8; 32],
     pub currency_mint: [u8; 32],
+    pub token_decimals: u8,
+    pub currency_decimals: u8,
     pub token_vault: [u8; 32],
     pub currency_vault: [u8; 32],
     pub creator: [u8; 32],

@@ -2,7 +2,7 @@
 
 use crate::accounts::{
     discriminator, pubkey_to_base58, strip_discriminator, AuctionAccount, BidAccount,
-    CheckpointAccount,
+    CheckpointAccount, TickAccount,
 };
 use crate::rpc::RpcClient;
 use crate::ws::{WsEvent, WsSender};
@@ -22,6 +22,7 @@ pub async fn run(
     let auction_disc = discriminator("Auction");
     let bid_disc = discriminator("Bid");
     let checkpoint_disc = discriminator("Checkpoint");
+    let tick_disc = discriminator("Tick");
 
     info!("indexer started, program={program_id}, interval={:?}", interval);
 
@@ -34,6 +35,7 @@ pub async fn run(
             &auction_disc,
             &bid_disc,
             &checkpoint_disc,
+            &tick_disc,
         )
         .await
         {
@@ -51,6 +53,7 @@ async fn tick(
     auction_disc: &[u8; 8],
     bid_disc: &[u8; 8],
     checkpoint_disc: &[u8; 8],
+    tick_disc: &[u8; 8],
 ) -> anyhow::Result<()> {
     // --- Auctions ---
     let raw_auctions = rpc
@@ -125,6 +128,23 @@ async fn tick(
         upsert_bid(db, &acc.pubkey, &parsed).await?;
     }
 
+    // --- Ticks ---
+    let raw_ticks = rpc
+        .get_program_accounts_with_disc(program_id, tick_disc)
+        .await?;
+    debug!("fetched {} tick accounts", raw_ticks.len());
+    for acc in &raw_ticks {
+        let Some(body) = strip_discriminator(&acc.data, tick_disc) else { continue };
+        let parsed = match TickAccount::try_from_slice(body) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("failed to decode Tick {}: {e}", acc.pubkey);
+                continue;
+            }
+        };
+        upsert_tick(db, &acc.pubkey, &parsed).await?;
+    }
+
     // --- Checkpoints ---
     let raw_cps = rpc
         .get_program_accounts_with_disc(program_id, checkpoint_disc)
@@ -183,19 +203,23 @@ async fn tick(
             .execute(db)
             .await;
 
-            let raised_f = q64_x7_to_f64(&raised_q64);
-            let total_supply: i64 = sqlx::query_scalar(
-                "SELECT total_supply FROM auctions WHERE address = $1",
+            // Pull the cached mint decimals so we can convert the Q64·x7
+            // accumulators (which carry both the Q64 shift and 10^currency_decimals
+            // from raw bid base units) into human currency / token amounts.
+            let row: Option<(i64, i16, i16)> = sqlx::query_as(
+                "SELECT total_supply, token_decimals, currency_decimals FROM auctions WHERE address = $1",
             )
             .bind(&auction_pda)
             .fetch_optional(db)
             .await
             .ok()
-            .flatten()
-            .unwrap_or(0);
-            let total_cleared = q64_x7_to_f64(&cleared_q64);
-            let supply_pct = if total_supply > 0 {
-                (total_cleared / total_supply as f64) * 100.0
+            .flatten();
+            let (total_supply, token_decimals, currency_decimals) = row.unwrap_or((0, 0, 0));
+            let raised_f = q64_x7_to_f64(&raised_q64) / pow10(currency_decimals);
+            let total_cleared = q64_x7_to_f64(&cleared_q64) / pow10(currency_decimals);
+            let total_supply_human = (total_supply as f64) / pow10(token_decimals);
+            let supply_pct = if total_supply_human > 0.0 {
+                (total_cleared / total_supply_human) * 100.0
             } else {
                 0.0
             };
@@ -218,23 +242,33 @@ fn q64_x7_to_f64(x_str: &str) -> f64 {
     q64 / 1e7
 }
 
+fn pow10(d: i16) -> f64 {
+    10f64.powi(d.max(0) as i32)
+}
+
 async fn upsert_auction(db: &PgPool, address: &str, a: &AuctionAccount) -> anyhow::Result<()> {
     sqlx::query(
         r#"
         INSERT INTO auctions (
-            address, token_mint, currency_mint, creator, total_supply,
+            address, token_mint, currency_mint, token_decimals, currency_decimals,
+            creator, total_supply,
             start_time, end_time, claim_time, floor_price, max_bid_price,
             required_currency_raised, tick_spacing, clearing_price,
             sum_currency_demand, next_bid_id, last_checkpointed_time,
-            currency_raised_q64_x7, total_cleared_q64_x7, graduated, updated_at
+            currency_raised_q64_x7, total_cleared_q64_x7, graduated,
+            next_active_tick_price, updated_at
         ) VALUES (
             $1,$2,$3,$4,$5,
-            $6,$7,$8,$9,$10,
-            $11,$12,$13,
-            $14,$15,$16,
-            $17,$18,$19, NOW()
+            $6,$7,
+            $8,$9,$10,$11,$12,
+            $13,$14,$15,
+            $16,$17,$18,
+            $19,$20,$21,
+            $22, NOW()
         )
         ON CONFLICT (address) DO UPDATE SET
+            token_decimals = EXCLUDED.token_decimals,
+            currency_decimals = EXCLUDED.currency_decimals,
             total_supply = EXCLUDED.total_supply,
             start_time = EXCLUDED.start_time,
             end_time = EXCLUDED.end_time,
@@ -250,12 +284,15 @@ async fn upsert_auction(db: &PgPool, address: &str, a: &AuctionAccount) -> anyho
             currency_raised_q64_x7 = EXCLUDED.currency_raised_q64_x7,
             total_cleared_q64_x7 = EXCLUDED.total_cleared_q64_x7,
             graduated = EXCLUDED.graduated,
+            next_active_tick_price = EXCLUDED.next_active_tick_price,
             updated_at = NOW()
         "#,
     )
     .bind(address)
     .bind(pubkey_to_base58(&a.token_mint))
     .bind(pubkey_to_base58(&a.currency_mint))
+    .bind(a.token_decimals as i16)
+    .bind(a.currency_decimals as i16)
     .bind(pubkey_to_base58(&a.creator))
     .bind(a.total_supply as i64)
     .bind(a.start_time)
@@ -272,6 +309,7 @@ async fn upsert_auction(db: &PgPool, address: &str, a: &AuctionAccount) -> anyho
     .bind(a.currency_raised_q64_x7.to_string())
     .bind(a.total_cleared_q64_x7.to_string())
     .bind(a.graduated)
+    .bind(a.next_active_tick_price.to_string())
     .execute(db)
     .await?;
     Ok(())
@@ -334,6 +372,28 @@ async fn upsert_checkpoint(
     .bind(c.cumulative_mps as i64)
     .bind(c.cumulative_mps_per_price.to_string())
     .bind(c.currency_raised_at_clearing_price_q64_x7.to_string())
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+async fn upsert_tick(db: &PgPool, address: &str, t: &TickAccount) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO ticks (
+            address, auction, price, next_price, currency_demand_q64, updated_at
+        ) VALUES ($1,$2,$3,$4,$5, NOW())
+        ON CONFLICT (address) DO UPDATE SET
+            next_price = EXCLUDED.next_price,
+            currency_demand_q64 = EXCLUDED.currency_demand_q64,
+            updated_at = NOW()
+        "#,
+    )
+    .bind(address)
+    .bind(pubkey_to_base58(&t.auction))
+    .bind(t.price.to_string())
+    .bind(t.next_price.to_string())
+    .bind(t.currency_demand_q64.to_string())
     .execute(db)
     .await?;
     Ok(())

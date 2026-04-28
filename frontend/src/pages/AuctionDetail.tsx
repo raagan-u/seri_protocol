@@ -3,6 +3,8 @@ import { Transaction } from "@solana/web3.js";
 import type { Auction, Bid, BidBookRow, PricePoint } from "../api/types";
 import {
   buildBidTx,
+  buildClaimTx,
+  buildExitTx,
   fetchAuction,
   fetchBidBook,
   fetchPriceHistory,
@@ -74,6 +76,7 @@ export function AuctionDetail({
   const [priceHistory, setPriceHistory] = useState<PricePoint[]>([]);
   const [bidBook, setBidBook] = useState<BidBookRow[]>([]);
   const [userBid, setUserBid] = useState<Bid | null>(null);
+  const [settleBusy, setSettleBusy] = useState(false);
   const { publicKey, isConnected, signAndSendTransaction } = useWallet();
 
   useEffect(() => {
@@ -232,6 +235,9 @@ export function AuctionDetail({
                 floorPrice={floorPrice}
                 maxBidPrice={maxBidPrice}
                 tickSpacing={tickSpacing}
+                clearingPriceStr={auction.clearingPrice}
+                floorPriceStr={auction.floorPrice}
+                maxBidPriceStr={auction.maxBidPrice}
                 disabled={!isConnected || !publicKey}
                 disabledReason={
                   !isConnected || !publicKey ? "Connect wallet to bid" : undefined
@@ -260,6 +266,47 @@ export function AuctionDetail({
                 bid={userBid}
                 clearingPrice={clearingPrice}
                 requiredRaise={requiredRaise}
+                busy={settleBusy}
+                onExit={async () => {
+                  if (!publicKey || !userBid) return;
+                  setSettleBusy(true);
+                  try {
+                    const { tx } = await buildExitTx(
+                      auctionAddress,
+                      userBid.address,
+                      { bidder: publicKey }
+                    );
+                    const raw = Uint8Array.from(atob(tx), (c) => c.charCodeAt(0));
+                    const t = Transaction.from(raw);
+                    const { signature } = await signAndSendTransaction(t);
+                    console.info("exit signature:", signature);
+                  } catch (e) {
+                    console.error("exit failed:", e);
+                    alert(`Exit failed: ${e instanceof Error ? e.message : e}`);
+                  } finally {
+                    setSettleBusy(false);
+                  }
+                }}
+                onClaim={async () => {
+                  if (!publicKey || !userBid) return;
+                  setSettleBusy(true);
+                  try {
+                    const { tx } = await buildClaimTx(
+                      auctionAddress,
+                      userBid.address,
+                      { bidder: publicKey }
+                    );
+                    const raw = Uint8Array.from(atob(tx), (c) => c.charCodeAt(0));
+                    const t = Transaction.from(raw);
+                    const { signature } = await signAndSendTransaction(t);
+                    console.info("claim signature:", signature);
+                  } catch (e) {
+                    console.error("claim failed:", e);
+                    alert(`Claim failed: ${e instanceof Error ? e.message : e}`);
+                  } finally {
+                    setSettleBusy(false);
+                  }
+                }}
               />
             )}
             <AuctionTimelineMini status={auction.status} />

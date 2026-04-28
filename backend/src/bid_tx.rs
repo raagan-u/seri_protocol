@@ -6,6 +6,7 @@
 
 use crate::accounts::{discriminator, pubkey_to_base58, strip_discriminator, TickAccount};
 use crate::api::ApiState;
+use crate::eviction::{load_ticks, plan_eviction};
 use crate::rpc::RpcClient;
 use crate::tx_utils::{
     bs58_to_hash, create_ata_idempotent_ix, decimal_to_q64, decimal_to_u64_scaled, derive_ata,
@@ -79,7 +80,9 @@ async fn build_inner(
     // --- Load auction from DB ---
     let row = sqlx::query(
         r#"SELECT token_mint, currency_mint, creator, clearing_price, floor_price,
-                  max_bid_price, tick_spacing, next_bid_id, last_checkpointed_time
+                  max_bid_price, tick_spacing, next_bid_id, last_checkpointed_time,
+                  sum_currency_demand, next_active_tick_price, total_supply,
+                  token_decimals, currency_decimals
            FROM auctions WHERE address = $1"#,
     )
     .bind(auction_addr)
@@ -94,6 +97,11 @@ async fn build_inner(
     let next_bid_id: u64 = row.get::<i64, _>("next_bid_id") as u64;
     let last_checkpointed_time: i64 = row.get("last_checkpointed_time");
     let currency_mint = Pubkey::from_str(&row.get::<String, _>("currency_mint"))?;
+    let sum_currency_demand: u128 = row.get::<String, _>("sum_currency_demand").parse()?;
+    let next_active_tick_price: u128 = row.get::<String, _>("next_active_tick_price").parse()?;
+    let total_supply: u64 = row.get::<i64, _>("total_supply") as u64;
+    let token_decimals: u8 = row.get::<i16, _>("token_decimals") as u8;
+    let currency_decimals: u8 = row.get::<i16, _>("currency_decimals") as u8;
 
     // --- Validate bid params mirror the on-chain checks (early fail) ---
     anyhow::ensure!(
@@ -183,25 +191,40 @@ async fn build_inner(
     let token_program = token_program_id()?;
     let system_program = system_program_id();
 
-    let submit_bid_ix = Instruction {
-        program_id,
-        accounts: vec![
-            AccountMeta::new(bidder, true),         // bidder (signer, writable)
-            AccountMeta::new(auction, false),       // auction
-            AccountMeta::new(bid_pda, false),       // bid
-            AccountMeta::new(tick_pda, false),      // tick
-            AccountMeta::new(prev_tick_pda, false), // prev_tick
-            AccountMeta::new(latest_checkpoint, false), // latest_checkpoint
-            AccountMeta::new(new_checkpoint_pda, false), // new_checkpoint
-            AccountMeta::new_readonly(auction_steps_pda, false),
-            AccountMeta::new(bidder_currency_ata, false), // bidder_currency_account
-            AccountMeta::new(currency_vault, false),      // currency_vault
-            AccountMeta::new_readonly(token_program, false),
-            AccountMeta::new_readonly(system_program, false),
-            AccountMeta::new_readonly(sysvar::rent::id(), false),
-        ],
-        data,
-    };
+    // --- Eviction queue + clearing tick for the embedded checkpoint_at_time call ---
+    let ticks = load_ticks(&s.db, auction_addr).await?;
+    let plan = plan_eviction(
+        &program_id,
+        &auction,
+        &ticks,
+        sum_currency_demand,
+        next_active_tick_price,
+        clearing_price,
+        total_supply,
+        token_decimals,
+        currency_decimals,
+    );
+
+    let mut accounts = vec![
+        AccountMeta::new(bidder, true),         // bidder (signer, writable)
+        AccountMeta::new(auction, false),       // auction
+        AccountMeta::new(bid_pda, false),       // bid
+        AccountMeta::new(tick_pda, false),      // tick
+        AccountMeta::new(prev_tick_pda, false), // prev_tick
+        AccountMeta::new(latest_checkpoint, false), // latest_checkpoint
+        AccountMeta::new(new_checkpoint_pda, false), // new_checkpoint
+        AccountMeta::new_readonly(auction_steps_pda, false),
+        AccountMeta::new(bidder_currency_ata, false), // bidder_currency_account
+        AccountMeta::new(currency_vault, false),      // currency_vault
+        AccountMeta::new_readonly(token_program, false),
+        AccountMeta::new_readonly(system_program, false),
+        AccountMeta::new_readonly(sysvar::rent::id(), false),
+    ];
+    for pda in plan.into_account_metas() {
+        accounts.push(AccountMeta::new_readonly(pda, false));
+    }
+
+    let submit_bid_ix = Instruction { program_id, accounts, data };
 
     // Prepend create-ATA (idempotent) so a fresh bidder doesn't need to fund
     // their currency ATA up front. If the ATA exists, the instruction is a

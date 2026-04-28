@@ -21,9 +21,20 @@ fn q64_to_f64(x_str: &str) -> f64 {
     (x as f64) / (1u128 << 64) as f64
 }
 
-/// Q64 with extra 10^7 scaling → plain f64 (for currency_raised_q64_x7 etc).
-fn q64_x7_to_f64(x_str: &str) -> f64 {
-    q64_to_f64(x_str) / 1e7
+fn pow10(d: i16) -> f64 {
+    10f64.powi(d.max(0) as i32)
+}
+
+/// `amount_q64` (a bid's `(amount_raw_bu << 64)`) → human currency units.
+fn amount_q64_to_human(x_str: &str, currency_decimals: i16) -> f64 {
+    q64_to_f64(x_str) / pow10(currency_decimals)
+}
+
+/// Currency-side accumulator (`currency_raised_q64_x7`) → human currency units.
+/// Same divisor applies to `total_cleared_q64_x7` because after the Option-B
+/// clearing-price fix, both end up scaled by 10^currency_decimals when decoded.
+fn q64_x7_to_human_currency(x_str: &str, currency_decimals: i16) -> f64 {
+    q64_to_f64(x_str) / 1e7 / pow10(currency_decimals)
 }
 
 fn compute_status(
@@ -101,7 +112,8 @@ pub async fn get_auction(
 ) -> Result<Json<AuctionDto>, StatusCode> {
     let row = sqlx::query(
         r#"
-        SELECT address, token_mint, currency_mint, creator, total_supply,
+        SELECT address, token_mint, currency_mint, token_decimals, currency_decimals,
+               creator, total_supply,
                start_time, end_time, claim_time, floor_price, max_bid_price,
                required_currency_raised, tick_spacing, clearing_price,
                next_bid_id, currency_raised_q64_x7, total_cleared_q64_x7,
@@ -129,15 +141,19 @@ pub async fn get_auction(
     let clearing_price_raw: String = row.get("clearing_price");
     let currency_raised_q64_x7: String = row.get("currency_raised_q64_x7");
     let total_cleared_q64_x7: String = row.get("total_cleared_q64_x7");
-    let required: i64 = row.get("required_currency_raised");
-    let total_supply: i64 = row.get("total_supply");
+    let required_raw: i64 = row.get("required_currency_raised");
+    let total_supply_raw: i64 = row.get("total_supply");
+    let token_decimals: i16 = row.get("token_decimals");
+    let currency_decimals: i16 = row.get("currency_decimals");
     let start_time: i64 = row.get("start_time");
     let end_time: i64 = row.get("end_time");
     let claim_time: i64 = row.get("claim_time");
     let graduated: bool = row.get("graduated");
 
-    let currency_raised = q64_x7_to_f64(&currency_raised_q64_x7);
-    let total_cleared = q64_x7_to_f64(&total_cleared_q64_x7);
+    let currency_raised = q64_x7_to_human_currency(&currency_raised_q64_x7, currency_decimals);
+    let total_cleared = q64_x7_to_human_currency(&total_cleared_q64_x7, currency_decimals);
+    let required = (required_raw as f64) / pow10(currency_decimals);
+    let total_supply_human = (total_supply_raw as f64) / pow10(token_decimals);
 
     let status = compute_status(
         graduated,
@@ -145,19 +161,19 @@ pub async fn get_auction(
         end_time,
         claim_time,
         currency_raised,
-        required as f64,
+        required,
     );
 
     let now = chrono::Utc::now().timestamp();
     let time_remaining = if now < end_time { Some(end_time - now) } else { None };
 
-    let progress_percent = if required > 0 {
-        (currency_raised / required as f64) * 100.0
+    let progress_percent = if required > 0.0 {
+        (currency_raised / required) * 100.0
     } else {
         0.0
     };
-    let supply_released_percent = if total_supply > 0 {
-        (total_cleared / total_supply as f64) * 100.0
+    let supply_released_percent = if total_supply_human > 0.0 {
+        (total_cleared / total_supply_human) * 100.0
     } else {
         0.0
     };
@@ -186,10 +202,10 @@ pub async fn get_auction(
 
         currency: "USDC".into(),
         currency_raised: format!("{:.2}", currency_raised),
-        required_currency_raised: required.to_string(),
+        required_currency_raised: format!("{:.2}", required),
         progress_percent,
 
-        total_supply,
+        total_supply: total_supply_human as i64,
         total_cleared: total_cleared as i64,
         supply_released_percent,
 
@@ -256,13 +272,20 @@ pub async fn get_bid_book(
     State(s): State<ApiState>,
     Path(address): Path<String>,
 ) -> Result<Json<Vec<BidBookRowDto>>, StatusCode> {
-    let clearing: Option<String> =
-        sqlx::query_scalar("SELECT clearing_price FROM auctions WHERE address = $1")
-            .bind(&address)
-            .fetch_optional(&s.db)
-            .await
-            .map_err(internal)?;
-    let clearing_f = clearing.as_deref().map(q64_to_f64).unwrap_or(0.0);
+    let auction_row = sqlx::query(
+        "SELECT clearing_price, currency_decimals FROM auctions WHERE address = $1",
+    )
+    .bind(&address)
+    .fetch_optional(&s.db)
+    .await
+    .map_err(internal)?;
+    let (clearing_f, currency_decimals) = match auction_row {
+        Some(r) => (
+            q64_to_f64(r.get::<String, _>("clearing_price").as_str()),
+            r.get::<i16, _>("currency_decimals"),
+        ),
+        None => (0.0, 0),
+    };
 
     let rows = sqlx::query(
         "SELECT max_price, amount_q64 FROM bids WHERE auction = $1 AND exited_time = 0",
@@ -279,7 +302,7 @@ pub async fn get_bid_book(
         let mp: String = r.get("max_price");
         let amt: String = r.get("amount_q64");
         let price = q64_to_f64(&mp);
-        let amount = q64_to_f64(&amt);
+        let amount = amount_q64_to_human(&amt, currency_decimals);
         let key = (price * 1_000_000.0) as u64;
         let entry = agg.entry(key).or_insert((0.0, 0));
         entry.0 += amount;
@@ -335,7 +358,7 @@ pub async fn get_user_bids(
         r#"
         SELECT b.address, b.auction, b.bid_id, b.max_price, b.amount_q64,
                b.start_time, b.exited_time, b.tokens_filled,
-               a.clearing_price
+               a.clearing_price, a.currency_decimals
         FROM bids b
         LEFT JOIN auctions a ON a.address = b.auction
         WHERE b.owner = $1
@@ -355,9 +378,10 @@ pub async fn get_user_bids(
             let exited_time: i64 = r.get("exited_time");
             let tokens_filled: i64 = r.get("tokens_filled");
             let clearing: Option<String> = r.get("clearing_price");
+            let currency_decimals: i16 = r.try_get("currency_decimals").unwrap_or(0);
 
             let mp_f = q64_to_f64(&max_price);
-            let amt_f = q64_to_f64(&amount_q64);
+            let amt_f = amount_q64_to_human(&amount_q64, currency_decimals);
             let cp_f = clearing.as_deref().map(q64_to_f64).unwrap_or(0.0);
 
             let status = if exited_time != 0 {
@@ -414,7 +438,8 @@ pub async fn list_auctions(
     Query(q): Query<ListAuctionsQuery>,
 ) -> Result<Json<Vec<AuctionDto>>, StatusCode> {
     let mut sql = String::from(
-        r#"SELECT address, token_mint, currency_mint, creator, total_supply,
+        r#"SELECT address, token_mint, currency_mint, token_decimals, currency_decimals,
+                  creator, total_supply,
                   start_time, end_time, claim_time, floor_price, max_bid_price,
                   required_currency_raised, tick_spacing, clearing_price,
                   next_bid_id, currency_raised_q64_x7, total_cleared_q64_x7,
@@ -460,21 +485,25 @@ async fn auction_dto_from_row(db: &PgPool, row: &sqlx::postgres::PgRow) -> anyho
     let clearing_price_raw: String = row.get("clearing_price");
     let currency_raised_q64_x7: String = row.get("currency_raised_q64_x7");
     let total_cleared_q64_x7: String = row.get("total_cleared_q64_x7");
-    let required: i64 = row.get("required_currency_raised");
-    let total_supply: i64 = row.get("total_supply");
+    let required_raw: i64 = row.get("required_currency_raised");
+    let total_supply_raw: i64 = row.get("total_supply");
+    let token_decimals: i16 = row.get("token_decimals");
+    let currency_decimals: i16 = row.get("currency_decimals");
     let start_time: i64 = row.get("start_time");
     let end_time: i64 = row.get("end_time");
     let claim_time: i64 = row.get("claim_time");
     let graduated: bool = row.get("graduated");
 
-    let currency_raised = q64_x7_to_f64(&currency_raised_q64_x7);
-    let total_cleared = q64_x7_to_f64(&total_cleared_q64_x7);
+    let currency_raised = q64_x7_to_human_currency(&currency_raised_q64_x7, currency_decimals);
+    let total_cleared = q64_x7_to_human_currency(&total_cleared_q64_x7, currency_decimals);
+    let required = (required_raw as f64) / pow10(currency_decimals);
+    let total_supply_human = (total_supply_raw as f64) / pow10(token_decimals);
 
-    let status = compute_status(graduated, start_time, end_time, claim_time, currency_raised, required as f64);
+    let status = compute_status(graduated, start_time, end_time, claim_time, currency_raised, required);
     let now = chrono::Utc::now().timestamp();
     let time_remaining = if now < end_time { Some(end_time - now) } else { None };
-    let progress_percent = if required > 0 { (currency_raised / required as f64) * 100.0 } else { 0.0 };
-    let supply_released_percent = if total_supply > 0 { (total_cleared / total_supply as f64) * 100.0 } else { 0.0 };
+    let progress_percent = if required > 0.0 { (currency_raised / required) * 100.0 } else { 0.0 };
+    let supply_released_percent = if total_supply_human > 0.0 { (total_cleared / total_supply_human) * 100.0 } else { 0.0 };
 
     Ok(AuctionDto {
         address,
@@ -493,9 +522,9 @@ async fn auction_dto_from_row(db: &PgPool, row: &sqlx::postgres::PgRow) -> anyho
         tick_spacing: row.get::<i64, _>("tick_spacing").to_string(),
         currency: "USDC".into(),
         currency_raised: format!("{:.2}", currency_raised),
-        required_currency_raised: required.to_string(),
+        required_currency_raised: format!("{:.2}", required),
         progress_percent,
-        total_supply,
+        total_supply: total_supply_human as i64,
         total_cleared: total_cleared as i64,
         supply_released_percent,
         bid_count: row.get("next_bid_id"),
@@ -516,7 +545,7 @@ pub async fn get_auction_bids(
     let rows = sqlx::query(
         r#"SELECT b.address, b.auction, b.bid_id, b.max_price, b.amount_q64,
                   b.start_time, b.exited_time, b.tokens_filled,
-                  a.clearing_price
+                  a.clearing_price, a.currency_decimals
            FROM bids b
            LEFT JOIN auctions a ON a.address = b.auction
            WHERE b.auction = $1
@@ -535,9 +564,10 @@ fn row_to_bid_dto(r: sqlx::postgres::PgRow) -> BidDto {
     let exited_time: i64 = r.get("exited_time");
     let tokens_filled: i64 = r.get("tokens_filled");
     let clearing: Option<String> = r.get("clearing_price");
+    let currency_decimals: i16 = r.try_get("currency_decimals").unwrap_or(0);
 
     let mp_f = q64_to_f64(&max_price);
-    let amt_f = q64_to_f64(&amount_q64);
+    let amt_f = amount_q64_to_human(&amount_q64, currency_decimals);
     let cp_f = clearing.as_deref().map(q64_to_f64).unwrap_or(0.0);
 
     let status = if exited_time != 0 {
@@ -573,7 +603,8 @@ pub async fn get_user_auctions(
     Path(wallet): Path<String>,
 ) -> Result<Json<Vec<AuctionDto>>, StatusCode> {
     let rows = sqlx::query(
-        r#"SELECT address, token_mint, currency_mint, creator, total_supply,
+        r#"SELECT address, token_mint, currency_mint, token_decimals, currency_decimals,
+                  creator, total_supply,
                   start_time, end_time, claim_time, floor_price, max_bid_price,
                   required_currency_raised, tick_spacing, clearing_price,
                   next_bid_id, currency_raised_q64_x7, total_cleared_q64_x7,

@@ -46,6 +46,9 @@ export const MOCK_AUCTION: Auction = {
 function genPriceHistory(endPrice: number): PricePoint[] {
   const points: PricePoint[] = [];
   const n = 216;
+  // 18 hours of synthetic history ending now, 5-minute buckets.
+  const nowSec = Math.floor(Date.now() / 1000);
+  const stepSec = (18 * 3600) / n;
   let p = 0.18;
   for (let i = 0; i < n; i++) {
     const t = i / n;
@@ -56,7 +59,11 @@ function genPriceHistory(endPrice: number): PricePoint[] {
     else if (t < 0.78) target = 0.29 + (t - 0.55) * 0.18;
     else target = 0.33 + (t - 0.78) * 0.4;
     p = p * 0.78 + target * 0.22 + (Math.random() - 0.5) * 0.006;
-    points.push({ t: i, price: Math.max(0.18, p) });
+    points.push({
+      t: i,
+      price: Math.max(0.18, p),
+      timestamp: Math.floor(nowSec - (n - 1 - i) * stepSec),
+    });
   }
   points[points.length - 1].price = endPrice;
   return points;

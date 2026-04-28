@@ -1,16 +1,36 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
+import {
+  AreaSeries,
+  LineSeries,
+  createChart,
+  type IChartApi,
+  type IPriceLine,
+  type ISeriesApi,
+  type LineData,
+  type UTCTimestamp,
+} from "lightweight-charts";
 import type { PricePoint } from "../api/types";
 
 export type ChartStyle = "area" | "line" | "stepped";
+
+// Color palette matches the rest of the UI (defined in CSS vars in index.css).
+// lightweight-charts needs literal strings, so they're hardcoded here.
+const COLORS = {
+  bg: "#0E0F12",
+  text: "rgba(229, 231, 235, 0.9)",
+  textDim: "rgba(229, 231, 235, 0.45)",
+  grid: "rgba(255, 255, 255, 0.06)",
+  border: "rgba(255, 255, 255, 0.10)",
+  accent: "#7FE0C2",
+  accentBg: "rgba(127, 224, 194, 0.14)",
+};
 
 export function PriceChart({
   data,
   height = 280,
   style = "area",
-  floorPrice = 0.18,
-  maxPrice,
+  floorPrice,
   showAxes = true,
-  live = true,
   onHover,
 }: {
   data: PricePoint[];
@@ -23,257 +43,132 @@ export function PriceChart({
   onHover?: (p: PricePoint | null) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(800);
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const seriesRef = useRef<ISeriesApi<"Area"> | ISeriesApi<"Line"> | null>(null);
+  const floorLineRef = useRef<IPriceLine | null>(null);
+  const onHoverRef = useRef(onHover);
+  onHoverRef.current = onHover;
 
+  // --- Mount: create chart + series. Re-runs only on `style` / `showAxes` change.
   useEffect(() => {
-    if (!wrapRef.current) return;
-    const ro = new ResizeObserver((entries) => {
-      for (const e of entries) setWidth(Math.floor(e.contentRect.width));
+    const el = wrapRef.current;
+    if (!el) return;
+
+    const chart = createChart(el, {
+      autoSize: true,
+      layout: {
+        background: { color: "transparent" },
+        textColor: COLORS.textDim,
+        fontFamily: "'JetBrains Mono', monospace",
+        fontSize: 10,
+      },
+      grid: {
+        vertLines: { color: "transparent" },
+        horzLines: { color: COLORS.grid },
+      },
+      rightPriceScale: {
+        visible: showAxes,
+        borderColor: COLORS.border,
+      },
+      timeScale: {
+        visible: showAxes,
+        borderColor: COLORS.border,
+        timeVisible: true,
+        secondsVisible: false,
+      },
+      crosshair: {
+        vertLine: { color: COLORS.textDim, width: 1, style: 3, labelVisible: false },
+        horzLine: { color: COLORS.textDim, width: 1, style: 3, labelVisible: false },
+      },
+      handleScroll: false,
+      handleScale: false,
     });
-    ro.observe(wrapRef.current);
-    return () => ro.disconnect();
-  }, []);
+    chartRef.current = chart;
 
-  if (data.length === 0) {
-    return <div ref={wrapRef} style={{ width: "100%", height }} />;
-  }
+    const seriesOpts = {
+      lineColor: COLORS.accent,
+      lineWidth: 2 as const,
+      priceLineVisible: false,
+      lastValueVisible: true,
+    };
+    const series =
+      style === "line" || style === "stepped"
+        ? chart.addSeries(LineSeries, {
+            ...seriesOpts,
+            lineType: style === "stepped" ? 1 : 0,
+          })
+        : chart.addSeries(AreaSeries, {
+            ...seriesOpts,
+            topColor: COLORS.accentBg,
+            bottomColor: "rgba(127, 224, 194, 0)",
+          });
+    seriesRef.current = series;
 
-  const pad = {
-    l: showAxes ? 54 : 0,
-    r: showAxes ? 16 : 0,
-    t: 16,
-    b: showAxes ? 28 : 0,
-  };
-  const w = width;
-  const h = height;
-  const chartW = Math.max(10, w - pad.l - pad.r);
-  const chartH = Math.max(10, h - pad.t - pad.b);
-
-  const prices = data.map((d) => d.price);
-  const minP = Math.min(floorPrice, ...prices);
-  const maxP = maxPrice ?? Math.max(...prices) * 1.08;
-  const range = maxP - minP || 1;
-
-  const x = (i: number) => pad.l + (i / (data.length - 1)) * chartW;
-  const y = (p: number) => pad.t + (1 - (p - minP) / range) * chartH;
-
-  let linePath = "";
-  let areaPath = "";
-  if (style === "line" || style === "area") {
-    linePath = data
-      .map((d, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(2)} ${y(d.price).toFixed(2)}`)
-      .join(" ");
-    areaPath =
-      linePath +
-      ` L ${x(data.length - 1).toFixed(2)} ${pad.t + chartH} L ${x(0).toFixed(2)} ${pad.t + chartH} Z`;
-  } else {
-    let p = "";
-    data.forEach((d, i) => {
-      if (i === 0) p += `M ${x(i).toFixed(2)} ${y(d.price).toFixed(2)}`;
-      else
-        p += ` L ${x(i).toFixed(2)} ${y(data[i - 1].price).toFixed(2)} L ${x(i).toFixed(
-          2
-        )} ${y(d.price).toFixed(2)}`;
+    chart.subscribeCrosshairMove((param) => {
+      const cb = onHoverRef.current;
+      if (!cb) return;
+      if (!param.time || !seriesRef.current) {
+        cb(null);
+        return;
+      }
+      const v = param.seriesData.get(seriesRef.current) as LineData | undefined;
+      if (v && typeof v.value === "number") {
+        cb({
+          t: Number(param.time),
+          price: v.value,
+          timestamp: Number(param.time),
+        });
+      } else {
+        cb(null);
+      }
     });
-    linePath = p;
-    areaPath =
-      p +
-      ` L ${x(data.length - 1).toFixed(2)} ${pad.t + chartH} L ${x(0).toFixed(2)} ${pad.t + chartH} Z`;
-  }
 
-  const yTicks = 4;
-  const yTickVals: number[] = [];
-  for (let i = 0; i <= yTicks; i++) {
-    yTickVals.push(minP + (range * i) / yTicks);
-  }
-  const xTickFracs = [0, 0.33, 0.66, 1];
+    return () => {
+      chart.remove();
+      chartRef.current = null;
+      seriesRef.current = null;
+    };
+  }, [style, showAxes]);
 
-  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
-    if (!wrapRef.current) return;
-    const rect = wrapRef.current.getBoundingClientRect();
-    const px = e.clientX - rect.left;
-    const frac = Math.max(0, Math.min(1, (px - pad.l) / chartW));
-    const idx = Math.round(frac * (data.length - 1));
-    setHoverIdx(idx);
-    onHover?.(data[idx]);
-  };
-  const onLeave = () => {
-    setHoverIdx(null);
-    onHover?.(null);
-  };
+  // --- Push data updates to the existing series.
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series) return;
+    const points: LineData<UTCTimestamp>[] = data
+      .map((p) => ({
+        time: ((p.timestamp ?? p.t) as number) as UTCTimestamp,
+        value: p.price,
+      }))
+      // de-dupe identical timestamps (lightweight-charts requires strictly increasing time)
+      .filter((p, i, arr) => i === 0 || p.time !== arr[i - 1].time)
+      .sort((a, b) => (a.time as number) - (b.time as number));
+    series.setData(points);
 
-  const latest = data[data.length - 1];
-  const hovered = hoverIdx !== null ? data[hoverIdx] : null;
+    if (floorLineRef.current) {
+      series.removePriceLine(floorLineRef.current);
+      floorLineRef.current = null;
+    }
+    if (floorPrice !== undefined && floorPrice > 0 && points.length > 0) {
+      floorLineRef.current = series.createPriceLine({
+        price: floorPrice,
+        color: COLORS.textDim,
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: showAxes,
+        title: "Floor",
+      });
+    }
+
+    if (chartRef.current && points.length > 0) {
+      chartRef.current.timeScale().fitContent();
+    }
+  }, [data, floorPrice, showAxes]);
 
   return (
-    <div ref={wrapRef} style={{ position: "relative", width: "100%", height }}>
-      <svg
-        width={w}
-        height={h}
-        onMouseMove={onMove}
-        onMouseLeave={onLeave}
-        style={{ display: "block", cursor: "crosshair" }}
-      >
-        <defs>
-          <linearGradient id="areaFill" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.14" />
-            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-
-        {showAxes &&
-          yTickVals.map((v, i) => (
-            <g key={i}>
-              <line
-                x1={pad.l}
-                x2={pad.l + chartW}
-                y1={y(v)}
-                y2={y(v)}
-                stroke="var(--border)"
-                strokeDasharray={i === 0 ? "0" : "2 4"}
-              />
-              <text
-                x={pad.l - 10}
-                y={y(v) + 3}
-                textAnchor="end"
-                fontSize="10"
-                fontFamily="'JetBrains Mono', monospace"
-                fill="var(--text-3)"
-              >
-                ${v.toFixed(2)}
-              </text>
-            </g>
-          ))}
-
-        <line
-          x1={pad.l}
-          x2={pad.l + chartW}
-          y1={y(floorPrice)}
-          y2={y(floorPrice)}
-          stroke="var(--text-3)"
-          strokeDasharray="3 3"
-          strokeWidth="1"
-          opacity="0.5"
-        />
-        {showAxes && (
-          <text
-            x={pad.l + chartW - 6}
-            y={y(floorPrice) - 6}
-            textAnchor="end"
-            fontSize="9"
-            letterSpacing="0.12em"
-            fontFamily="'JetBrains Mono', monospace"
-            fill="var(--text-3)"
-          >
-            FLOOR ${floorPrice.toFixed(2)}
-          </text>
-        )}
-
-        {style === "area" && <path d={areaPath} fill="url(#areaFill)" />}
-
-        <path
-          d={linePath}
-          fill="none"
-          stroke="var(--accent)"
-          strokeWidth="1.5"
-          strokeLinejoin="round"
-          strokeLinecap="round"
-        />
-
-        <circle cx={x(data.length - 1)} cy={y(latest.price)} r="3.5" fill="var(--accent)" />
-        <circle cx={x(data.length - 1)} cy={y(latest.price)} r="7" fill="var(--accent)" opacity="0.18">
-          {live && (
-            <animate attributeName="r" values="7;11;7" dur="2s" repeatCount="indefinite" />
-          )}
-          {live && (
-            <animate
-              attributeName="opacity"
-              values="0.25;0;0.25"
-              dur="2s"
-              repeatCount="indefinite"
-            />
-          )}
-        </circle>
-
-        {showAxes &&
-          xTickFracs.map((f, i) => {
-            const hoursAgo = Math.round((1 - f) * 18);
-            return (
-              <text
-                key={i}
-                x={pad.l + f * chartW}
-                y={pad.t + chartH + 18}
-                textAnchor={
-                  i === 0 ? "start" : i === xTickFracs.length - 1 ? "end" : "middle"
-                }
-                fontSize="10"
-                fontFamily="'JetBrains Mono', monospace"
-                fill="var(--text-3)"
-              >
-                {hoursAgo === 0 ? "NOW" : `-${hoursAgo}h`}
-              </text>
-            );
-          })}
-
-        {hovered && hoverIdx !== null && (
-          <g>
-            <line
-              x1={x(hoverIdx)}
-              x2={x(hoverIdx)}
-              y1={pad.t}
-              y2={pad.t + chartH}
-              stroke="var(--text-3)"
-              strokeDasharray="2 3"
-              opacity="0.5"
-            />
-            <circle
-              cx={x(hoverIdx)}
-              cy={y(hovered.price)}
-              r="3"
-              fill="var(--bg)"
-              stroke="var(--accent)"
-              strokeWidth="1.5"
-            />
-          </g>
-        )}
-      </svg>
-
-      {hovered && hoverIdx !== null && (
-        <div
-          style={{
-            position: "absolute",
-            left: Math.max(pad.l, Math.min(w - 140, x(hoverIdx) - 70)),
-            top: 10,
-            background: "var(--bg-deep)",
-            border: "1px solid var(--border-strong)",
-            borderRadius: 6,
-            padding: "8px 12px",
-            fontSize: 11,
-            pointerEvents: "none",
-            boxShadow: "0 6px 24px rgba(0,0,0,0.4)",
-            minWidth: 130,
-          }}
-        >
-          <div
-            style={{
-              color: "var(--text-3)",
-              letterSpacing: "0.08em",
-              fontSize: 9,
-              textTransform: "uppercase",
-            }}
-          >
-            {Math.round((1 - hoverIdx / (data.length - 1)) * 18 * 60)}m ago
-          </div>
-          <div
-            className="num"
-            style={{ color: "var(--accent)", fontSize: 15, fontWeight: 500, marginTop: 2 }}
-          >
-            ${hovered.price.toFixed(3)}
-          </div>
-        </div>
-      )}
-    </div>
+    <div
+      ref={wrapRef}
+      style={{ width: "100%", height, position: "relative" }}
+    />
   );
 }
 

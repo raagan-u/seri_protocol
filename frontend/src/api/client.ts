@@ -83,6 +83,55 @@ export async function buildBidTx(
   return (await r.json()) as BuildBidTxResponse;
 }
 
+export interface BuildExitTxResponse {
+  tx: string;
+  flow: string;
+}
+
+export async function buildExitTx(
+  auction: string,
+  bid: string,
+  body: { bidder: string }
+): Promise<BuildExitTxResponse> {
+  const r = await fetch(
+    `${API_BASE}/api/auctions/${auction}/bid/${bid}/exit-tx`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }
+  );
+  if (!r.ok) {
+    const msg = await r.text().catch(() => "exit-tx failed");
+    throw new Error(msg || `exit-tx failed (${r.status})`);
+  }
+  return (await r.json()) as BuildExitTxResponse;
+}
+
+export interface BuildClaimTxResponse {
+  tx: string;
+}
+
+export async function buildClaimTx(
+  auction: string,
+  bid: string,
+  body: { bidder: string }
+): Promise<BuildClaimTxResponse> {
+  const r = await fetch(
+    `${API_BASE}/api/auctions/${auction}/bid/${bid}/claim-tx`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }
+  );
+  if (!r.ok) {
+    const msg = await r.text().catch(() => "claim-tx failed");
+    throw new Error(msg || `claim-tx failed (${r.status})`);
+  }
+  return (await r.json()) as BuildClaimTxResponse;
+}
+
 export interface BuildInitTxResponse {
   tx: string; // base64-encoded unsigned transaction
   auctionPda: string; // derived auction PDA (for redirects)

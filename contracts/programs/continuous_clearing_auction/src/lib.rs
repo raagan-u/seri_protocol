@@ -20,12 +20,24 @@ pub mod continuous_clearing_auction {
         instructions::initialize::handle_initialize_auction(ctx, params)
     }
 
-    pub fn submit_bid(ctx: Context<SubmitBid>, params: SubmitBidParams) -> Result<()> {
+    pub fn submit_bid<'info>(
+        ctx: Context<'_, '_, 'info, 'info, SubmitBid<'info>>,
+        params: SubmitBidParams,
+    ) -> Result<()> {
         instructions::submit_bid::handle_submit_bid(ctx, params)
     }
 
-    pub fn checkpoint(ctx: Context<CheckpointAccounts>, params: CheckpointParams) -> Result<()> {
+    pub fn checkpoint<'info>(
+        ctx: Context<'_, '_, 'info, 'info, CheckpointAccounts<'info>>,
+        params: CheckpointParams,
+    ) -> Result<()> {
         instructions::checkpoint::handle_checkpoint(ctx, params)
+    }
+
+    pub fn finalize_auction<'info>(
+        ctx: Context<'_, '_, 'info, 'info, FinalizeAuction<'info>>,
+    ) -> Result<()> {
+        instructions::finalize_auction::handle_finalize_auction(ctx)
     }
 
     pub fn exit_bid(ctx: Context<ExitBid>) -> Result<()> {

@@ -1,9 +1,12 @@
 mod accounts;
 mod api;
 mod bid_tx;
+mod claim_tx;
 mod config;
 mod crank;
 mod db;
+mod eviction;
+mod exit_tx;
 mod indexer;
 mod init_tx;
 mod rpc;
@@ -88,6 +91,14 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/auctions/:address/bid/build-tx",
             axum::routing::post(bid_tx::build_bid_tx),
+        )
+        .route(
+            "/auctions/:address/bid/:bid/exit-tx",
+            axum::routing::post(exit_tx::build_exit_tx),
+        )
+        .route(
+            "/auctions/:address/bid/:bid/claim-tx",
+            axum::routing::post(claim_tx::build_claim_tx),
         )
         .route("/users/:wallet/bids", get(api::get_user_bids))
         .route("/users/:wallet/auctions", get(api::get_user_auctions))

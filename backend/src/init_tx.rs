@@ -99,9 +99,16 @@ async fn build_inner(body: BuildInitTxBody) -> anyhow::Result<BuildInitTxRespons
     let tokens_recipient = Pubkey::from_str(&body.params.tokens_recipient)?;
     let funds_recipient = Pubkey::from_str(&body.params.funds_recipient)?;
 
-    let total_supply = decimal_to_u64_scaled(&body.params.total_supply, 0)?;
+    let token_decimals = fetch_mint_decimals(&rpc, &token_mint).await?;
+    let currency_decimals = fetch_mint_decimals(&rpc, &currency_mint).await?;
+
+    let total_supply =
+        decimal_to_u64_scaled(&body.params.total_supply, token_decimals as u32)?;
     let floor_price = decimal_to_q64(&body.params.floor_price)?;
-    let required_currency_raised = decimal_to_u64_scaled(&body.params.required_currency_raised, 0)?;
+    let required_currency_raised = decimal_to_u64_scaled(
+        &body.params.required_currency_raised,
+        currency_decimals as u32,
+    )?;
 
     validate_params(
         &body.params,
@@ -248,6 +255,23 @@ fn validate_params(
         "floorPrice + tickSpacing exceeds the max supported bid price for this supply"
     );
     Ok(())
+}
+
+/// SPL Mint layout:
+///   COption<Pubkey> mint_authority   (4 + 32 = 36 bytes)
+///   u64            supply            (8 bytes)  → starts at offset 36
+///   u8             decimals          (1 byte)   → starts at offset 44
+async fn fetch_mint_decimals(rpc: &RpcClient, mint: &Pubkey) -> anyhow::Result<u8> {
+    let data = rpc
+        .get_account(&mint.to_string())
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("mint account {mint} not found"))?;
+    anyhow::ensure!(
+        data.len() >= 45,
+        "mint account {mint} too short ({} bytes) — not an SPL Mint",
+        data.len()
+    );
+    Ok(data[44])
 }
 
 fn compute_max_bid_price(total_supply: u64) -> u128 {

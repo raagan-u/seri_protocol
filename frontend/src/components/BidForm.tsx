@@ -2,6 +2,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { useState } from "react";
 import { Button, Card, Label, StatusDot } from "./primitives";
 import { fmtPrice, fmtTokens } from "../format";
+import { decimalToQ64, q64ToDecimalString, snapDownToTick } from "../q64";
 
 export interface BidFormSubmission {
   maxPrice: number;
@@ -14,6 +15,10 @@ export function BidForm({
   clearingPrice,
   floorPrice,
   maxBidPrice,
+  clearingPriceStr,
+  floorPriceStr,
+  maxBidPriceStr,
+  tickSpacing,
   onSubmit,
   disabled,
   disabledReason,
@@ -21,9 +26,12 @@ export function BidForm({
   clearingPrice: number;
   floorPrice: number;
   maxBidPrice: number;
-  // tickSpacing is part of the protocol spec; unused in current form
-  // but accepted so callers stay aligned with the API shape.
-  tickSpacing?: number;
+  // Raw decimal strings from the API — used for exact Q64 round-trip math
+  // so we can validate `max_price % tick_spacing == 0` before submitting.
+  clearingPriceStr: string;
+  floorPriceStr: string;
+  maxBidPriceStr: string;
+  tickSpacing: number;
   onSubmit?: (s: BidFormSubmission) => Promise<void> | void;
   disabled?: boolean;
   disabledReason?: string;
@@ -41,10 +49,36 @@ export function BidForm({
   const headroom =
     clearingPrice > 0 ? ((maxP - clearingPrice) / clearingPrice) * 100 : 0;
 
+  // --- Tick-spacing alignment check.
+  // On-chain rule: `max_price == floor_price || max_price % tick_spacing == 0`,
+  // where `max_price` is in Q64.64 raw units and `tick_spacing` is a small u64.
+  // Whether a typed decimal aligns depends on the *truncated* Q64 representation,
+  // which is impossible for a user to predict — so we replicate the math here.
+  const tickQ64 = tickSpacing > 0 ? BigInt(tickSpacing) : 0n;
+  const maxPriceQ64 = maxPrice ? decimalToQ64(maxPrice) : null;
+  const floorQ64 = decimalToQ64(floorPriceStr);
+  const clearingQ64 = decimalToQ64(clearingPriceStr);
+  const maxBidQ64 = decimalToQ64(maxBidPriceStr);
+  const aligned =
+    maxPriceQ64 !== null &&
+    tickQ64 > 0n &&
+    floorQ64 !== null &&
+    (maxPriceQ64 === floorQ64 || maxPriceQ64 % tickQ64 === 0n);
+  const snapSuggestion =
+    !aligned && maxPriceQ64 !== null && clearingQ64 !== null && maxBidQ64 !== null
+      ? snapDownToTick(maxPriceQ64, tickQ64, clearingQ64, maxBidQ64)
+      : null;
+  const snapStr = snapSuggestion !== null ? q64ToDecimalString(snapSuggestion, 6) : null;
+
   let riskLabel: string | null = null;
   let riskColor = "var(--text-3)";
   if (maxP > 0 && maxP <= clearingPrice) {
     riskLabel = `Must be above current clearing (${fmtPrice(clearingPrice, 3)}) to submit`;
+    riskColor = "var(--danger)";
+  } else if (maxP > 0 && !aligned) {
+    riskLabel = snapStr
+      ? `Price doesn't align to tick spacing — try ${snapStr}`
+      : `Price doesn't align to tick spacing`;
     riskColor = "var(--danger)";
   } else if (maxP > 0 && headroom < 8) {
     riskLabel = `${headroom.toFixed(1)}% above clearing — will pause accruing if clearing catches up`;
@@ -74,7 +108,8 @@ export function BidForm({
     }
   };
 
-  const isDisabled = submitting || disabled || maxP <= clearingPrice || amt <= 0;
+  const isDisabled =
+    submitting || disabled || maxP <= clearingPrice || amt <= 0 || !aligned;
 
   return (
     <Card pad={20} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -167,7 +202,27 @@ export function BidForm({
           }}
         >
           <StatusDot color={riskColor} />
-          <span>{riskLabel}</span>
+          <span style={{ flex: 1 }}>{riskLabel}</span>
+          {!aligned && snapStr && (
+            <button
+              type="button"
+              onClick={() => setMaxPrice(snapStr)}
+              style={{
+                background: "transparent",
+                border: `1px solid ${riskColor}66`,
+                color: riskColor,
+                fontSize: 10,
+                fontFamily: "'JetBrains Mono', monospace",
+                padding: "3px 8px",
+                borderRadius: 4,
+                cursor: "pointer",
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+              }}
+            >
+              Use
+            </button>
+          )}
         </div>
       )}
 

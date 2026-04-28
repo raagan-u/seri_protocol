@@ -3,18 +3,18 @@ use anchor_lang::prelude::*;
 use crate::errors::CCAError;
 use crate::math::constants::*;
 use crate::state::*;
-use crate::state::checkpoint::Checkpoint as CheckpointState;
 
 use super::shared::checkpoint_at_time;
 
-#[derive(AnchorSerialize, AnchorDeserialize)]
-pub struct CheckpointParams {
-    pub now: i64,
-}
-
+/// One-shot finalize: runs `checkpoint_at_time(end_time)` so the accumulators advance
+/// through the final tail of the auction (which the crank otherwise skips since it
+/// only ticks while `end_time > now`). This is what flips `auction.graduated` and
+/// produces the canonical final clearing price.
+///
+/// Mirrors `_getFinalCheckpoint()` from the Solidity reference. Callable by anyone
+/// once `clock.unix_timestamp >= end_time`. Reverts if already finalized.
 #[derive(Accounts)]
-#[instruction(params: CheckpointParams)]
-pub struct CheckpointAccounts<'info> {
+pub struct FinalizeAuction<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
 
@@ -30,16 +30,16 @@ pub struct CheckpointAccounts<'info> {
         constraint = latest_checkpoint.auction == auction.key(),
         constraint = latest_checkpoint.next_timestamp == MAX_TIMESTAMP,
     )]
-    pub latest_checkpoint: Box<Account<'info, CheckpointState>>,
+    pub latest_checkpoint: Box<Account<'info, Checkpoint>>,
 
     #[account(
         init_if_needed,
         payer = payer,
-        space = 8 + CheckpointState::INIT_SPACE,
-        seeds = [b"checkpoint", auction.key().as_ref(), &params.now.to_le_bytes()],
+        space = 8 + Checkpoint::INIT_SPACE,
+        seeds = [b"checkpoint", auction.key().as_ref(), &auction.end_time.to_le_bytes()],
         bump,
     )]
-    pub new_checkpoint: Box<Account<'info, CheckpointState>>,
+    pub new_checkpoint: Box<Account<'info, Checkpoint>>,
 
     #[account(
         constraint = auction_steps.auction == auction.key(),
@@ -50,28 +50,30 @@ pub struct CheckpointAccounts<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
-pub fn handle_checkpoint<'info>(
-    ctx: Context<'_, '_, 'info, 'info, CheckpointAccounts<'info>>,
-    params: CheckpointParams,
+pub fn handle_finalize_auction<'info>(
+    ctx: Context<'_, '_, 'info, 'info, FinalizeAuction<'info>>,
 ) -> Result<()> {
     let clock = Clock::get()?;
-    let now = params.now;
     let program_id = *ctx.program_id;
-    let auction = &ctx.accounts.auction;
+    let end_time = ctx.accounts.auction.end_time;
 
     require!(
-        now >= auction.last_checkpointed_time && now <= clock.unix_timestamp,
-        CCAError::InvalidCheckpointHint
+        clock.unix_timestamp >= end_time,
+        CCAError::AuctionNotEnded
+    );
+    require!(
+        ctx.accounts.auction.last_checkpointed_time < end_time,
+        CCAError::AlreadyFinalized
     );
 
-    let auction_key = auction.key();
+    let auction_key = ctx.accounts.auction.key();
     checkpoint_at_time(
         &mut ctx.accounts.auction,
         auction_key,
         &ctx.accounts.auction_steps,
         &mut ctx.accounts.latest_checkpoint,
         &mut ctx.accounts.new_checkpoint,
-        now,
+        end_time,
         ctx.remaining_accounts,
         &program_id,
     )
