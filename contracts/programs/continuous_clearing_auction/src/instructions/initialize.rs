@@ -16,6 +16,8 @@ pub struct InitializeAuctionParams {
     pub tokens_recipient: Pubkey,
     pub funds_recipient: Pubkey,
     pub steps: Vec<AuctionStep>,
+    /// Auction mode: 0 = TIME_BASED, 1 = BLOCK_BASED.
+    pub mode: u8,
 }
 
 #[derive(Accounts)]
@@ -97,7 +99,12 @@ pub struct InitializeAuction<'info> {
 
 pub fn handle_initialize_auction(ctx: Context<InitializeAuction>, params: InitializeAuctionParams) -> Result<()> {
     let clock = Clock::get()?;
-    let now = clock.unix_timestamp;
+    // In block mode, params.start_time is a slot number; in time mode, a unix timestamp.
+    let now = if params.mode == 1 {
+        clock.slot as i64
+    } else {
+        clock.unix_timestamp
+    };
 
     // --- Validations ---
     require!(params.start_time > now, CCAError::InvalidStepsConfig);
@@ -175,6 +182,7 @@ pub fn handle_initialize_auction(ctx: Context<InitializeAuction>, params: Initia
     auction.sweep_tokens_done = false;
     auction.graduated = false;
     auction.bump = ctx.bumps.auction;
+    auction.mode = params.mode;
 
     // --- Initialize AuctionSteps ---
     let steps_account = &mut ctx.accounts.auction_steps;
