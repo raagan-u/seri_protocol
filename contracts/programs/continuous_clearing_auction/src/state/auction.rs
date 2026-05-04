@@ -24,6 +24,8 @@ pub struct Auction {
     pub floor_price: u128,
     pub max_bid_price: u128,
     pub required_currency_raised: u64,
+    /// Auction mode: 0 = TIME_BASED (clock.unix_timestamp), 1 = BLOCK_BASED (clock.slot).
+    pub mode: u8,
 
     // Live state
     pub clearing_price: u128,
