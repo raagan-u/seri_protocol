@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
-import { Transaction } from "@solana/web3.js";
+import { Connection, Transaction } from "@solana/web3.js";
 import { Button, Card, Label } from "../components/primitives";
 import { ConnectButton } from "../components/ConnectButton";
 import { buildInitTx, persistAuctionMetadata, type AuctionMetadataBody } from "../api/client";
@@ -133,6 +133,18 @@ const BLANK: FormState = {
   tokensRecipient: "",
 };
 
+function defaultForm(): FormState {
+  const now = new Date();
+  const start = new Date(now.getTime() + 5 * 60 * 1000);
+  const end = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  return {
+    ...BLANK,
+    startTime: toDatetimeLocal(start),
+    endTime: toDatetimeLocal(end),
+    claimTime: toDatetimeLocal(end),
+  };
+}
+
 // ---- validation ------------------------------------------------------------
 
 const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -245,8 +257,8 @@ function toMetadataBody(payload: CreateAuctionPayload): AuctionMetadataBody {
 type SubmitState = "idle" | "building" | "signing" | "syncing" | "success" | "error";
 
 export function CreateAuction({ wallet }: { wallet: string | null }) {
-  const { publicKey, isConnected, signAndSendTransaction } = useWallet();
-  const [form, setForm] = useState<FormState>(BLANK);
+  const { publicKey, isConnected, signTransaction } = useWallet();
+  const [form, setForm] = useState<FormState>(defaultForm);
   const [errors, setErrors] = useState<Errors>({});
   const [touched, setTouched] = useState<Partial<Record<keyof FormState, true>>>({});
   const [submit, setSubmit] = useState<SubmitState>("idle");
@@ -306,7 +318,17 @@ export function CreateAuction({ wallet }: { wallet: string | null }) {
 
       const raw = Uint8Array.from(atob(resp.tx), (c) => c.charCodeAt(0));
       const transaction = Transaction.from(raw);
-      const { signature } = await signAndSendTransaction(transaction);
+      const signed = await signTransaction(transaction);
+
+      const rpcUrl =
+        (import.meta.env.VITE_SOLANA_RPC_URL as string | undefined) ??
+        "https://api.devnet.solana.com";
+      const connection = new Connection(rpcUrl, "confirmed");
+      const signature = await connection.sendRawTransaction(signed.serialize(), {
+        skipPreflight: false,
+        preflightCommitment: "confirmed",
+      });
+      await connection.confirmTransaction(signature, "confirmed");
       console.info("initialize_auction signature:", signature);
 
       setTxSig(signature);
@@ -502,25 +524,9 @@ export function CreateAuction({ wallet }: { wallet: string | null }) {
             </div>
           )}
           {stepsPreview && (
-            <div style={{ marginTop: 16 }}>
-              <Label>Generated steps ({stepsPreview.length})</Label>
-              <div
-                style={{
-                  marginTop: 8,
-                  fontFamily: "monospace",
-                  fontSize: 12,
-                  color: "var(--text-muted)",
-                  display: "grid",
-                  gap: 4,
-                }}
-              >
-                {stepsPreview.map((s, i) => (
-                  <div key={i}>
-                    {i + 1}. mps={s.mps}, duration={s.duration}s ({humanDur(s.duration)})
-                    &nbsp;·&nbsp;weight={s.mps * s.duration}
-                  </div>
-                ))}
-              </div>
+            <div style={{ marginTop: 12, fontSize: 12, color: "var(--text-muted)" }}>
+              {stepsPreview.length} emission step{stepsPreview.length !== 1 ? "s" : ""} generated
+              &nbsp;·&nbsp;total {humanDur(stepsPreview.reduce((a, s) => a + s.duration, 0))}
             </div>
           )}
         </Section>

@@ -135,7 +135,7 @@ pub fn handle_initialize_auction(ctx: Context<InitializeAuction>, params: Initia
     } else {
         let supply = params.total_supply as u128;
         let price_from_liquidity = ((1u128 << 90) / supply) * ((1u128 << 90) / supply);
-        let price_from_currency = (1u128 << 126) / supply * Q64;
+        let price_from_currency = ((1u128 << 126) / supply).saturating_mul(Q64);
         price_from_liquidity.min(price_from_currency)
     };
 

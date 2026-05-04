@@ -19,6 +19,7 @@ export interface SeriWallet {
   disconnect: () => Promise<void>;
   signMessage: (msg: string) => Promise<{ signature: Uint8Array; publicKey: string }>;
   signAndSendTransaction: (tx: SolanaTx) => Promise<{ signature: string }>;
+  signTransaction: <T extends SolanaTx>(tx: T) => Promise<T>;
 }
 
 export function useWallet(): SeriWallet {
@@ -47,5 +48,7 @@ export function useWallet(): SeriWallet {
     },
     signMessage: (msg) => solana.signMessage(msg),
     signAndSendTransaction: (tx) => solana.signAndSendTransaction(tx),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    signTransaction: (tx) => solana.signTransaction(tx as any) as any,
   };
 }
