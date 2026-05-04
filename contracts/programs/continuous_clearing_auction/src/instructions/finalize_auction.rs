@@ -4,7 +4,7 @@ use crate::errors::CCAError;
 use crate::math::constants::*;
 use crate::state::*;
 
-use super::shared::checkpoint_at_time;
+use super::shared::{auction_now, checkpoint_at_time};
 
 /// One-shot finalize: runs `checkpoint_at_time(end_time)` so the accumulators advance
 /// through the final tail of the auction (which the crank otherwise skips since it
@@ -56,9 +56,10 @@ pub fn handle_finalize_auction<'info>(
     let clock = Clock::get()?;
     let program_id = *ctx.program_id;
     let end_time = ctx.accounts.auction.end_time;
+    let mode = ctx.accounts.auction.mode;
 
     require!(
-        clock.unix_timestamp >= end_time,
+        auction_now(mode, &clock) >= end_time,
         CCAError::AuctionNotEnded
     );
     require!(

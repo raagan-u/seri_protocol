@@ -6,6 +6,8 @@ use crate::math::constants::*;
 use crate::math::fixed_point::*;
 use crate::state::*;
 
+use super::shared::auction_now;
+
 #[derive(Accounts)]
 pub struct ExitBid<'info> {
     #[account(
@@ -57,7 +59,7 @@ pub fn handle_exit_bid(ctx: Context<ExitBid>) -> Result<()> {
     require!(bid.exited_time == 0, CCAError::BidAlreadyExited);
 
     let clock = Clock::get()?;
-    let now = clock.unix_timestamp;
+    let now = auction_now(auction.mode, &clock);
     require!(now >= auction.end_time, CCAError::AuctionNotEnded);
 
     let (tokens_filled, refund) = if !auction.graduated {

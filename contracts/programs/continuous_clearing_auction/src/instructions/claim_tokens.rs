@@ -4,6 +4,8 @@ use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 use crate::errors::CCAError;
 use crate::state::*;
 
+use super::shared::auction_now;
+
 #[derive(Accounts)]
 pub struct ClaimTokens<'info> {
     #[account(
@@ -36,8 +38,8 @@ pub struct ClaimTokens<'info> {
 
 pub fn handle_claim_tokens(ctx: Context<ClaimTokens>) -> Result<()> {
     let clock = Clock::get()?;
-    let now = clock.unix_timestamp;
     let auction = &ctx.accounts.auction;
+    let now = auction_now(auction.mode, &clock);
     let bid = &mut ctx.accounts.bid;
 
     require!(now >= auction.claim_time, CCAError::ClaimTimeNotReached);

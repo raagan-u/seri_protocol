@@ -45,7 +45,7 @@ pub struct InitializeAuction<'info> {
         seeds = [b"steps", auction.key().as_ref()],
         bump,
     )]
-    pub auction_steps: Account<'info, AuctionSteps>,
+    pub auction_steps: Box<Account<'info, AuctionSteps>>,
 
     #[account(
         init,
