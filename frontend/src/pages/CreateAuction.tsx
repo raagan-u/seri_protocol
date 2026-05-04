@@ -2,7 +2,12 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode 
 import { Connection, Transaction } from "@solana/web3.js";
 import { Button, Card, Label } from "../components/primitives";
 import { ConnectButton } from "../components/ConnectButton";
-import { buildInitTx, persistAuctionMetadata, type AuctionMetadataBody } from "../api/client";
+import {
+  buildInitTx,
+  buildInitBlockTx,
+  persistAuctionMetadata,
+  type AuctionMetadataBody,
+} from "../api/client";
 import type {
   AuctionStepInput,
   CreateAuctionPayload,
@@ -108,6 +113,8 @@ interface FormState {
   requiredCurrencyRaised: string;
   // emission
   preset: EmissionPreset;
+  // emission timing mode
+  mode: "time" | "block";
   // recipients
   fundsRecipient: string;
   tokensRecipient: string;
@@ -129,6 +136,7 @@ const BLANK: FormState = {
   tickSpacing: "2",
   requiredCurrencyRaised: "",
   preset: "flat",
+  mode: "time",
   fundsRecipient: "",
   tokensRecipient: "",
 };
@@ -136,7 +144,7 @@ const BLANK: FormState = {
 function defaultForm(): FormState {
   const now = new Date();
   const start = new Date(now.getTime() + 5 * 60 * 1000);
-  const end = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  const end = new Date(start.getTime() + 5 * 60 * 1000);
   return {
     ...BLANK,
     startTime: toDatetimeLocal(start),
@@ -312,7 +320,8 @@ export function CreateAuction({ wallet }: { wallet: string | null }) {
     setAuctionPda(null);
     setTxSig(null);
     try {
-      const resp = await buildInitTx(payload);
+      const buildFn = form.mode === "block" ? buildInitBlockTx : buildInitTx;
+      const resp = await buildFn(payload);
       setAuctionPda(resp.auctionPda);
       setSubmit("signing");
 
@@ -333,9 +342,15 @@ export function CreateAuction({ wallet }: { wallet: string | null }) {
 
       setTxSig(signature);
       setSubmit("syncing");
+      const metaBody = toMetadataBody(payload);
+      if (form.mode === "block") {
+        metaBody.display_start_time = toUnix(form.startTime);
+        metaBody.display_end_time = toUnix(form.endTime);
+        metaBody.display_claim_time = toUnix(form.claimTime);
+      }
       const metadataOk = await persistAuctionMetadata(
         resp.auctionPda,
-        toMetadataBody(payload)
+        metaBody
       );
 
       if (!metadataOk) {
@@ -382,6 +397,10 @@ export function CreateAuction({ wallet }: { wallet: string | null }) {
             validated before submission.
           </p>
         </div>
+
+        <Section title="Auction mode">
+          <ModeToggle value={form.mode} onChange={(v) => set("mode")(v)} />
+        </Section>
 
         <Section title="Token identity">
           <Row>
@@ -527,6 +546,13 @@ export function CreateAuction({ wallet }: { wallet: string | null }) {
             <div style={{ marginTop: 12, fontSize: 12, color: "var(--text-muted)" }}>
               {stepsPreview.length} emission step{stepsPreview.length !== 1 ? "s" : ""} generated
               &nbsp;·&nbsp;total {humanDur(stepsPreview.reduce((a, s) => a + s.duration, 0))}
+              {form.mode === "block" && (
+                <>
+                  &nbsp;(≈&nbsp;
+                  {Math.floor(stepsPreview.reduce((a, s) => a + s.duration, 0) / 0.4)}
+                  &nbsp;slots)
+                </>
+              )}
             </div>
           )}
         </Section>
@@ -803,6 +829,58 @@ function TextArea({
         outline: "none",
       }}
     />
+  );
+}
+
+function ModeToggle({
+  value,
+  onChange,
+}: {
+  value: "time" | "block";
+  onChange: (v: "time" | "block") => void;
+}) {
+  const opts: { key: "time" | "block"; label: string; blurb: string }[] = [
+    {
+      key: "time",
+      label: "Time-based",
+      blurb: "Emissions advance with wall-clock seconds.",
+    },
+    {
+      key: "block",
+      label: "Block-based",
+      blurb: "Emissions advance per Solana slot (~0.4s each).",
+    },
+  ];
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+      {opts.map((o) => {
+        const active = value === o.key;
+        return (
+          <button
+            key={o.key}
+            type="button"
+            onClick={() => onChange(o.key)}
+            style={{
+              textAlign: "left",
+              background: active ? "var(--accent-bg)" : "transparent",
+              border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`,
+              color: active ? "var(--accent)" : "var(--text)",
+              borderRadius: 10,
+              padding: 14,
+              cursor: "pointer",
+              font: "inherit",
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>
+              {o.label}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              {o.blurb}
+            </div>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

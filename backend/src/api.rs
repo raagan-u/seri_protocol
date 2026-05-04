@@ -118,7 +118,8 @@ pub async fn get_auction(
                required_currency_raised, tick_spacing, clearing_price,
                next_bid_id, currency_raised_q64_x7, total_cleared_q64_x7,
                graduated, token_name, token_symbol, token_tagline,
-               token_icon_url, description
+               token_icon_url, description,
+               mode, display_start_time, display_end_time, display_claim_time
         FROM auctions WHERE address = $1
         "#,
     )
@@ -145,9 +146,24 @@ pub async fn get_auction(
     let total_supply_raw: i64 = row.get("total_supply");
     let token_decimals: i16 = row.get("token_decimals");
     let currency_decimals: i16 = row.get("currency_decimals");
-    let start_time: i64 = row.get("start_time");
-    let end_time: i64 = row.get("end_time");
-    let claim_time: i64 = row.get("claim_time");
+    let raw_start_time: i64 = row.get("start_time");
+    let raw_end_time: i64 = row.get("end_time");
+    let raw_claim_time: i64 = row.get("claim_time");
+    let mode: i16 = row.get("mode");
+    // In block mode, on-chain *_time fields hold slot numbers, not unix
+    // timestamps — fall back to display columns for status / countdown UX.
+    let (start_time, end_time, claim_time) = if mode == 1 {
+        let ds: Option<i64> = row.get("display_start_time");
+        let de: Option<i64> = row.get("display_end_time");
+        let dc: Option<i64> = row.get("display_claim_time");
+        (
+            ds.unwrap_or(raw_start_time),
+            de.unwrap_or(raw_end_time),
+            dc.unwrap_or(raw_claim_time),
+        )
+    } else {
+        (raw_start_time, raw_end_time, raw_claim_time)
+    };
     let graduated: bool = row.get("graduated");
 
     let currency_raised = q64_x7_to_human_currency(&currency_raised_q64_x7, currency_decimals);
@@ -444,7 +460,8 @@ pub async fn list_auctions(
                   required_currency_raised, tick_spacing, clearing_price,
                   next_bid_id, currency_raised_q64_x7, total_cleared_q64_x7,
                   graduated, token_name, token_symbol, token_tagline,
-                  token_icon_url, description
+                  token_icon_url, description,
+                  mode, display_start_time, display_end_time, display_claim_time
            FROM auctions"#,
     );
     let mut args: Vec<String> = Vec::new();
@@ -489,9 +506,22 @@ async fn auction_dto_from_row(db: &PgPool, row: &sqlx::postgres::PgRow) -> anyho
     let total_supply_raw: i64 = row.get("total_supply");
     let token_decimals: i16 = row.get("token_decimals");
     let currency_decimals: i16 = row.get("currency_decimals");
-    let start_time: i64 = row.get("start_time");
-    let end_time: i64 = row.get("end_time");
-    let claim_time: i64 = row.get("claim_time");
+    let raw_start_time: i64 = row.get("start_time");
+    let raw_end_time: i64 = row.get("end_time");
+    let raw_claim_time: i64 = row.get("claim_time");
+    let mode: i16 = row.get("mode");
+    let (start_time, end_time, claim_time) = if mode == 1 {
+        let ds: Option<i64> = row.get("display_start_time");
+        let de: Option<i64> = row.get("display_end_time");
+        let dc: Option<i64> = row.get("display_claim_time");
+        (
+            ds.unwrap_or(raw_start_time),
+            de.unwrap_or(raw_end_time),
+            dc.unwrap_or(raw_claim_time),
+        )
+    } else {
+        (raw_start_time, raw_end_time, raw_claim_time)
+    };
     let graduated: bool = row.get("graduated");
 
     let currency_raised = q64_x7_to_human_currency(&currency_raised_q64_x7, currency_decimals);
