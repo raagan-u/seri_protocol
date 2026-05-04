@@ -32,6 +32,7 @@ pub struct AuctionAccount {
     pub floor_price: u128,
     pub max_bid_price: u128,
     pub required_currency_raised: u64,
+    pub mode: u8,
     pub clearing_price: u128,
     pub sum_currency_demand_above_clearing: u128,
     pub next_active_tick_price: u128,

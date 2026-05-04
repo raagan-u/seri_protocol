@@ -650,6 +650,11 @@ pub struct MetadataBody {
     pub token_tagline: Option<String>,
     pub token_icon_url: Option<String>,
     pub description: Option<String>,
+    /// Block-mode only: the wall-clock unix timestamps the user originally
+    /// picked. Used purely for UI display alongside the on-chain slot numbers.
+    pub display_start_time: Option<i64>,
+    pub display_end_time: Option<i64>,
+    pub display_claim_time: Option<i64>,
 }
 
 pub async fn set_metadata(
@@ -664,6 +669,9 @@ pub async fn set_metadata(
               token_tagline  = COALESCE($4, token_tagline),
               token_icon_url = COALESCE($5, token_icon_url),
               description    = COALESCE($6, description),
+              display_start_time = COALESCE($7, display_start_time),
+              display_end_time   = COALESCE($8, display_end_time),
+              display_claim_time = COALESCE($9, display_claim_time),
               updated_at     = NOW()
            WHERE address = $1"#,
     )
@@ -673,6 +681,9 @@ pub async fn set_metadata(
     .bind(body.token_tagline)
     .bind(body.token_icon_url)
     .bind(body.description)
+    .bind(body.display_start_time)
+    .bind(body.display_end_time)
+    .bind(body.display_claim_time)
     .execute(&s.db)
     .await
     .map_err(internal)?;

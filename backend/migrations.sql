@@ -104,3 +104,12 @@ CREATE TABLE IF NOT EXISTS ticks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ticks_auction ON ticks(auction);
+
+-- Block-based emission PoC: track auction mode and original wall-clock times.
+-- In block mode the on-chain `start_time`/`end_time`/`claim_time` columns hold
+-- slot numbers, not unix timestamps; `display_*` columns preserve the user's
+-- original wall-clock intent for UI rendering.
+ALTER TABLE auctions ADD COLUMN IF NOT EXISTS mode               SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE auctions ADD COLUMN IF NOT EXISTS display_start_time BIGINT;
+ALTER TABLE auctions ADD COLUMN IF NOT EXISTS display_end_time   BIGINT;
+ALTER TABLE auctions ADD COLUMN IF NOT EXISTS display_claim_time BIGINT;
