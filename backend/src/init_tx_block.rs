@@ -1,4 +1,9 @@
-//! Builds an unsigned initialize_auction transaction for the creator's wallet to sign.
+//! Builds an unsigned initialize_auction transaction for BLOCK-BASED auctions.
+//!
+//! User picks start/end/claim as Unix timestamps. We convert via a fixed
+//! 0.4s/slot constant to slot offsets, fetch current slot, and submit the
+//! initialize_auction ix with mode=1 and `start_time`/`end_time`/`claim_time`
+//! holding slot numbers (not timestamps).
 
 use crate::rpc::{RpcClient, TokenAccountInfo};
 use crate::tx_utils::{
@@ -20,10 +25,12 @@ use std::str::FromStr;
 const INITIALIZE_AUCTION_DISCRIMINATOR: [u8; 8] = [37, 10, 117, 197, 208, 88, 117, 62];
 const MPS_TOTAL: u64 = 10_000_000;
 const MIN_TICK_SPACING: u64 = 2;
+const SLOT_DURATION_SECS: f64 = 0.4;
+const MODE_BLOCK: u8 = 1;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BuildInitTxBody {
+pub struct BuildInitBlockTxBody {
     pub creator: String,
     pub token_mint: String,
     pub currency_mint: String,
@@ -38,14 +45,19 @@ pub struct BuildInitTxBody {
 #[serde(rename_all = "camelCase")]
 pub struct InitializeAuctionParamsInput {
     pub total_supply: String,
+    /// Unix timestamp the user picked. Backend converts to slot.
     pub start_time: i64,
+    /// Unix timestamp the user picked. Backend converts to slot.
     pub end_time: i64,
+    /// Unix timestamp the user picked. Backend converts to slot.
     pub claim_time: i64,
     pub tick_spacing: u64,
     pub floor_price: String,
     pub required_currency_raised: String,
     pub tokens_recipient: String,
     pub funds_recipient: String,
+    /// Steps from the frontend are in seconds. We rebuild them in slot space.
+    #[serde(default)]
     pub steps: Vec<AuctionStepInput>,
 }
 
@@ -72,24 +84,27 @@ struct InitializeAuctionParamsData {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BuildInitTxResponse {
+pub struct BuildInitBlockTxResponse {
     pub tx: String,
     pub auction_pda: String,
     pub token_vault: String,
     pub currency_vault: String,
     pub creator_token_account: String,
+    pub start_slot: i64,
+    pub end_slot: i64,
+    pub claim_slot: i64,
 }
 
-pub async fn build_init_tx(
-    Json(body): Json<BuildInitTxBody>,
-) -> Result<Json<BuildInitTxResponse>, (StatusCode, String)> {
+pub async fn build_init_block_tx(
+    Json(body): Json<BuildInitBlockTxBody>,
+) -> Result<Json<BuildInitBlockTxResponse>, (StatusCode, String)> {
     build_inner(body).await.map(Json).map_err(|e| {
-        tracing::warn!("build_init_tx failed: {e:#}");
+        tracing::warn!("build_init_block_tx failed: {e:#}");
         (StatusCode::BAD_REQUEST, e.to_string())
     })
 }
 
-async fn build_inner(body: BuildInitTxBody) -> anyhow::Result<BuildInitTxResponse> {
+async fn build_inner(body: BuildInitBlockTxBody) -> anyhow::Result<BuildInitBlockTxResponse> {
     let cfg = crate::config::Config::from_env();
     let rpc = RpcClient::new(cfg.rpc_url);
     let program_id: Pubkey = cfg.program_id.parse()?;
@@ -111,7 +126,45 @@ async fn build_inner(body: BuildInitTxBody) -> anyhow::Result<BuildInitTxRespons
         currency_decimals as u32,
     )?;
 
-    validate_params(
+    // --- Convert wall-clock times to slot numbers ---
+    let now_secs = chrono::Utc::now().timestamp();
+    let current_slot: i64 = rpc.get_slot().await?.try_into()?;
+
+    let secs_to_start = (body.params.start_time - now_secs) as f64;
+    let secs_total = (body.params.end_time - body.params.start_time) as f64;
+    let secs_to_claim = (body.params.claim_time - body.params.end_time) as f64;
+    anyhow::ensure!(secs_total > 0.0, "endTime must be after startTime");
+    anyhow::ensure!(secs_to_claim >= 0.0, "claimTime must be >= endTime");
+
+    let slot_offset_to_start = (secs_to_start / SLOT_DURATION_SECS).floor() as i64;
+    let total_slots = (secs_total / SLOT_DURATION_SECS).floor() as i64;
+    let claim_slot_offset = (secs_to_claim / SLOT_DURATION_SECS).floor() as i64;
+
+    let start_slot = current_slot + slot_offset_to_start;
+    let end_slot = start_slot + total_slots;
+    let claim_slot = end_slot + claim_slot_offset;
+
+    anyhow::ensure!(start_slot > current_slot, "startTime must be in the future");
+    anyhow::ensure!(total_slots > 0, "auction duration must be > 0 slots");
+
+    // --- Build slot-based steps from preset ---
+    let preset = body.preset.as_deref().unwrap_or("flat");
+    let steps = build_block_steps_for_preset(preset, total_slots as u64)?;
+    anyhow::ensure!(!steps.is_empty(), "could not build steps from duration");
+
+    // Sanity: steps must sum to total_slots and weights to MPS_TOTAL.
+    let dur_sum: u64 = steps.iter().map(|s| s.duration as u64).sum();
+    anyhow::ensure!(
+        dur_sum as i64 == total_slots,
+        "internal: step durations {dur_sum} != total_slots {total_slots}"
+    );
+    let weight_sum: u64 = steps.iter().map(|s| (s.mps as u64) * (s.duration as u64)).sum();
+    anyhow::ensure!(
+        weight_sum == MPS_TOTAL,
+        "internal: step weights {weight_sum} != MPS_TOTAL"
+    );
+
+    validate_block_params(
         &body.params,
         total_supply,
         floor_price,
@@ -141,7 +194,7 @@ async fn build_inner(body: BuildInitTxBody) -> anyhow::Result<BuildInitTxRespons
         &[
             b"checkpoint",
             auction_pda.as_ref(),
-            &body.params.start_time.to_le_bytes(),
+            &start_slot.to_le_bytes(),
         ],
         &program_id,
     );
@@ -151,16 +204,16 @@ async fn build_inner(body: BuildInitTxBody) -> anyhow::Result<BuildInitTxRespons
 
     let params_data = InitializeAuctionParamsData {
         total_supply,
-        start_time: body.params.start_time,
-        end_time: body.params.end_time,
-        claim_time: body.params.claim_time,
+        start_time: start_slot,
+        end_time: end_slot,
+        claim_time: claim_slot,
         tick_spacing: body.params.tick_spacing,
         floor_price,
         required_currency_raised,
         tokens_recipient: tokens_recipient.to_bytes(),
         funds_recipient: funds_recipient.to_bytes(),
-        steps: body.params.steps,
-        mode: 0,
+        steps,
+        mode: MODE_BLOCK,
     };
 
     let mut data = Vec::with_capacity(8 + 128 + params_data.steps.len() * 8);
@@ -196,31 +249,94 @@ async fn build_inner(body: BuildInitTxBody) -> anyhow::Result<BuildInitTxRespons
     let tx = Transaction::new_unsigned(msg);
     let bytes = bincode::serialize(&tx)?;
 
-    Ok(BuildInitTxResponse {
+    Ok(BuildInitBlockTxResponse {
         tx: base64::engine::general_purpose::STANDARD.encode(&bytes),
         auction_pda: auction_pda.to_string(),
         token_vault: token_vault.to_string(),
         currency_vault: currency_vault.to_string(),
         creator_token_account: creator_token_account.to_string(),
+        start_slot,
+        end_slot,
+        claim_slot,
     })
 }
 
-fn validate_params(
+// ---- step builders (slot-based) -------------------------------------------
+
+fn build_block_steps_for_preset(
+    preset: &str,
+    total_slots: u64,
+) -> anyhow::Result<Vec<AuctionStepInput>> {
+    if total_slots == 0 {
+        return Ok(vec![]);
+    }
+    let steps = match preset {
+        "flat" => exact_block_steps(MPS_TOTAL, total_slots),
+        "frontloaded" => build_block_phases(total_slots, &[0.7, 0.3]),
+        "backloaded" => build_block_phases(total_slots, &[0.3, 0.7]),
+        "linear-decay" => build_block_phases(total_slots, &[0.4, 0.3, 0.2, 0.1]),
+        _ => anyhow::bail!("unknown preset {preset}"),
+    };
+    Ok(steps)
+}
+
+fn exact_block_steps(weight: u64, duration: u64) -> Vec<AuctionStepInput> {
+    if duration == 0 || weight == 0 {
+        return vec![];
+    }
+    let k = weight / duration;
+    let r = weight - k * duration;
+    let mut out = vec![];
+    if r > 0 {
+        out.push(AuctionStepInput {
+            mps: (k + 1) as u32,
+            duration: r as u32,
+        });
+    }
+    if duration - r > 0 && k > 0 {
+        out.push(AuctionStepInput {
+            mps: k as u32,
+            duration: (duration - r) as u32,
+        });
+    }
+    out
+}
+
+fn build_block_phases(total_slots: u64, weight_fractions: &[f64]) -> Vec<AuctionStepInput> {
+    let n = weight_fractions.len();
+    let base_dur = total_slots / n as u64;
+    let mut durations = vec![base_dur; n];
+    durations[n - 1] = total_slots - base_dur * (n as u64 - 1);
+
+    let ideal: Vec<f64> = weight_fractions.iter().map(|f| f * MPS_TOTAL as f64).collect();
+    let mut weights: Vec<u64> = ideal.iter().map(|w| w.floor() as u64).collect();
+    let deficit = MPS_TOTAL - weights.iter().sum::<u64>();
+
+    let mut order: Vec<(usize, f64)> = ideal
+        .iter()
+        .enumerate()
+        .map(|(i, w)| (i, w - w.floor()))
+        .collect();
+    order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    for j in 0..deficit as usize {
+        weights[order[j % n].0] += 1;
+    }
+
+    let mut out = vec![];
+    for i in 0..n {
+        out.extend(exact_block_steps(weights[i], durations[i]));
+    }
+    out
+}
+
+// ---- validation -----------------------------------------------------------
+
+fn validate_block_params(
     params: &InitializeAuctionParamsInput,
     total_supply: u64,
     floor_price: u128,
     required_currency_raised: u64,
 ) -> anyhow::Result<()> {
-    let now = chrono::Utc::now().timestamp();
-    anyhow::ensure!(params.start_time > now, "startTime must be in the future");
-    anyhow::ensure!(
-        params.end_time > params.start_time,
-        "endTime must be after startTime"
-    );
-    anyhow::ensure!(
-        params.claim_time >= params.end_time,
-        "claimTime must be at or after endTime"
-    );
     anyhow::ensure!(
         params.tick_spacing >= MIN_TICK_SPACING,
         "tickSpacing must be at least {MIN_TICK_SPACING}"
@@ -231,22 +347,6 @@ fn validate_params(
         required_currency_raised > 0,
         "requiredCurrencyRaised must be > 0"
     );
-    anyhow::ensure!(!params.steps.is_empty(), "steps must not be empty");
-
-    let total_duration: u64 = params.steps.iter().map(|s| s.duration as u64).sum();
-    anyhow::ensure!(
-        total_duration as i64 == params.end_time - params.start_time,
-        "steps must cover the full auction duration"
-    );
-    let total_weight: u64 = params
-        .steps
-        .iter()
-        .map(|s| (s.mps as u64) * (s.duration as u64))
-        .sum();
-    anyhow::ensure!(
-        total_weight == MPS_TOTAL,
-        "steps must sum to {MPS_TOTAL} weighted milli-basis-points"
-    );
 
     let max_bid_price = compute_max_bid_price(total_supply);
     anyhow::ensure!(
@@ -254,26 +354,9 @@ fn validate_params(
             .checked_add(params.tick_spacing as u128)
             .map(|p| p <= max_bid_price)
             .unwrap_or(false),
-        "floorPrice + tickSpacing exceeds the max supported bid price for this supply"
+        "floorPrice + tickSpacing exceeds max supported bid price"
     );
     Ok(())
-}
-
-/// SPL Mint layout:
-///   COption<Pubkey> mint_authority   (4 + 32 = 36 bytes)
-///   u64            supply            (8 bytes)  → starts at offset 36
-///   u8             decimals          (1 byte)   → starts at offset 44
-async fn fetch_mint_decimals(rpc: &RpcClient, mint: &Pubkey) -> anyhow::Result<u8> {
-    let data = rpc
-        .get_account(&mint.to_string())
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("mint account {mint} not found"))?;
-    anyhow::ensure!(
-        data.len() >= 45,
-        "mint account {mint} too short ({} bytes) — not an SPL Mint",
-        data.len()
-    );
-    Ok(data[44])
 }
 
 fn compute_max_bid_price(total_supply: u64) -> u128 {
@@ -285,6 +368,21 @@ fn compute_max_bid_price(total_supply: u64) -> u128 {
         let price_from_currency = ((1u128 << 126) / supply).saturating_mul(1u128 << 64);
         price_from_liquidity.min(price_from_currency)
     }
+}
+
+// ---- rpc helpers (mirrored from init_tx.rs) -------------------------------
+
+async fn fetch_mint_decimals(rpc: &RpcClient, mint: &Pubkey) -> anyhow::Result<u8> {
+    let data = rpc
+        .get_account(&mint.to_string())
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("mint account {mint} not found"))?;
+    anyhow::ensure!(
+        data.len() >= 45,
+        "mint account {mint} too short ({} bytes) — not an SPL Mint",
+        data.len()
+    );
+    Ok(data[44])
 }
 
 async fn pick_creator_token_account(
@@ -334,53 +432,4 @@ fn select_creator_token_account(
     anyhow::bail!(
         "creator token balance is too low: need {min_amount} raw units, best account has {best_available}"
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn prefers_ata_when_balance_is_sufficient() {
-        let preferred = Pubkey::new_unique();
-        let other = Pubkey::new_unique();
-        let selected = select_creator_token_account(
-            vec![
-                TokenAccountInfo {
-                    pubkey: other.to_string(),
-                    amount: 1_500,
-                },
-                TokenAccountInfo {
-                    pubkey: preferred.to_string(),
-                    amount: 1_000,
-                },
-            ],
-            preferred,
-            1_000,
-        )
-        .unwrap();
-        assert_eq!(selected, preferred);
-    }
-
-    #[test]
-    fn falls_back_to_largest_sufficient_balance() {
-        let preferred = Pubkey::new_unique();
-        let rich = Pubkey::new_unique();
-        let selected = select_creator_token_account(
-            vec![
-                TokenAccountInfo {
-                    pubkey: preferred.to_string(),
-                    amount: 999,
-                },
-                TokenAccountInfo {
-                    pubkey: rich.to_string(),
-                    amount: 2_000,
-                },
-            ],
-            preferred,
-            1_000,
-        )
-        .unwrap();
-        assert_eq!(selected, rich);
-    }
 }

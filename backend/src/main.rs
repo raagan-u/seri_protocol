@@ -9,6 +9,7 @@ mod eviction;
 mod exit_tx;
 mod indexer;
 mod init_tx;
+mod init_tx_block;
 mod rpc;
 mod tx_utils;
 mod ws;
@@ -83,6 +84,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/auctions/build-init-tx",
             axum::routing::post(init_tx::build_init_tx),
+        )
+        .route(
+            "/auctions-block/build-init-tx",
+            axum::routing::post(init_tx_block::build_init_block_tx),
         )
         .route(
             "/auctions/:address/metadata",

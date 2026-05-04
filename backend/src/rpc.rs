@@ -105,6 +105,29 @@ impl RpcClient {
         Ok(out)
     }
 
+    pub async fn get_slot(&self) -> anyhow::Result<u64> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getSlot",
+            "params": [{ "commitment": "confirmed" }]
+        });
+        let resp: RpcResp = self
+            .http
+            .post(&self.url)
+            .json(&body)
+            .send()
+            .await?
+            .json()
+            .await?;
+        if let Some(err) = resp.error {
+            anyhow::bail!("rpc error: {err}");
+        }
+        resp.result
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("missing slot in getSlot response"))
+    }
+
     pub async fn get_latest_blockhash(&self) -> anyhow::Result<String> {
         let body = json!({
             "jsonrpc": "2.0",
