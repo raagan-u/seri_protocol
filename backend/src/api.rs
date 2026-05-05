@@ -441,6 +441,36 @@ pub async fn health() -> impl IntoResponse {
     Json(serde_json::json!({ "status": "ok" }))
 }
 
+// --- Submit a signed transaction (used by bid / exit / claim flows) ---
+//
+// Frontend signs the tx with Phantom (no network call) then POSTs the
+// base64-encoded signed bytes here. Backend forwards to the configured
+// RPC, returning the signature on success or a 400 with the RPC error
+// (including program logs) on failure. Routing through the backend
+// gives us server-side logging and avoids Phantom's network mismatch.
+
+#[derive(Deserialize)]
+pub struct SubmitTxBody {
+    pub tx: String, // base64-encoded signed legacy Transaction
+}
+
+pub async fn submit_tx(
+    Json(body): Json<SubmitTxBody>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let cfg = crate::config::Config::from_env();
+    let rpc = crate::rpc::RpcClient::new(cfg.rpc_url);
+    match rpc.send_signed_tx_b64(&body.tx).await {
+        Ok(sig) => {
+            tracing::info!("submit_tx OK signature={sig}");
+            Ok(Json(serde_json::json!({ "signature": sig })))
+        }
+        Err(e) => {
+            tracing::warn!("submit_tx failed: {e:#}");
+            Err((axum::http::StatusCode::BAD_REQUEST, format!("{e:#}")))
+        }
+    }
+}
+
 // --- List auctions ---
 
 #[derive(Deserialize)]

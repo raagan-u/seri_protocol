@@ -159,6 +159,26 @@ export async function buildInitTx(
   return (await r.json()) as BuildInitTxResponse;
 }
 
+/**
+ * Forwards a signed (base64-encoded) transaction through the backend's
+ * configured RPC. Used by bid/exit/claim flows so the backend logs the
+ * full RPC error (including program logs) and avoids Phantom's
+ * extension-network mismatch.
+ */
+export async function submitSignedTx(signedB64: string): Promise<string> {
+  const r = await fetch(`${API_BASE}/api/submit-tx`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ tx: signedB64 }),
+  });
+  if (!r.ok) {
+    const msg = await r.text().catch(() => "submit-tx failed");
+    throw new Error(msg || `submit-tx failed (${r.status})`);
+  }
+  const j = (await r.json()) as { signature: string };
+  return j.signature;
+}
+
 export async function buildInitBlockTx(
   payload: CreateAuctionPayload
 ): Promise<BuildInitTxResponse> {
