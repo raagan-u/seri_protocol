@@ -76,7 +76,17 @@ async fn tick(
         let parsed = match AuctionAccount::try_from_slice(body) {
             Ok(a) => a,
             Err(e) => {
-                warn!("failed to decode Auction {}: {e}", acc.pubkey);
+                let msg = format!("{e}");
+                // Old auctions created before the `mode` byte was added to
+                // the Auction layout will fail here with a bool / size error.
+                // They're abandoned by the schema upgrade — log quietly.
+                if msg.contains("Invalid bool representation")
+                    || msg.contains("Unexpected length of input")
+                {
+                    tracing::debug!("skipping legacy Auction {} ({msg})", acc.pubkey);
+                } else {
+                    warn!("failed to decode Auction {}: {msg}", acc.pubkey);
+                }
                 continue;
             }
         };

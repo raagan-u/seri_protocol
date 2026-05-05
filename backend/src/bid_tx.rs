@@ -82,7 +82,7 @@ async fn build_inner(
         r#"SELECT token_mint, currency_mint, creator, clearing_price, floor_price,
                   max_bid_price, tick_spacing, next_bid_id, last_checkpointed_time,
                   sum_currency_demand, next_active_tick_price, total_supply,
-                  token_decimals, currency_decimals
+                  token_decimals, currency_decimals, mode
            FROM auctions WHERE address = $1"#,
     )
     .bind(auction_addr)
@@ -101,6 +101,7 @@ async fn build_inner(
     let next_active_tick_price: u128 = row.get::<String, _>("next_active_tick_price").parse()?;
     let total_supply: u64 = row.get::<i64, _>("total_supply") as u64;
     let token_decimals: u8 = row.get::<i16, _>("token_decimals") as u8;
+    let mode: i16 = row.get("mode");
     let currency_decimals: u8 = row.get::<i16, _>("currency_decimals") as u8;
 
     // --- Validate bid params mirror the on-chain checks (early fail) ---
@@ -170,8 +171,13 @@ async fn build_inner(
     .ok_or_else(|| anyhow::anyhow!("no checkpoints indexed yet; try again shortly"))?;
     let latest_checkpoint = Pubkey::from_str(&latest_cp_addr)?;
 
-    // Ensure `now > last_checkpointed_time` so new_checkpoint PDA != latest_checkpoint PDA.
-    let mut now = chrono::Utc::now().timestamp();
+    // `now` must match the program's `auction_now()` semantics: unix
+    // timestamp in time mode, slot number in block mode.
+    let mut now: i64 = if mode == 1 {
+        rpc.get_slot().await?.try_into()?
+    } else {
+        chrono::Utc::now().timestamp()
+    };
     if now <= last_checkpointed_time {
         now = last_checkpointed_time + 1;
     }

@@ -59,23 +59,35 @@ pub async fn run(rpc: RpcClient, db: PgPool, cfg: CrankConfig) {
 }
 
 async fn tick(rpc: &RpcClient, db: &PgPool, cfg: &CrankConfig) -> anyhow::Result<()> {
-    let now = chrono::Utc::now().timestamp();
-    // Pick up live auctions AND ended-but-unfinalized ones. The latter need a one-shot
-    // `finalize_auction` ix to advance accumulators through end_time and flip `graduated`.
-    let rows = sqlx::query_as::<_, (String, i64, i64)>(
-        r#"SELECT address, last_checkpointed_time, end_time
+    // For each auction, `start_time` / `end_time` / `last_checkpointed_time`
+    // are unix timestamps in mode=0 and slot numbers in mode=1.
+    // Compute "now" once per mode so the WHERE clauses make sense.
+    let now_secs = chrono::Utc::now().timestamp();
+    let now_slot: i64 = rpc.get_slot().await?.try_into()?;
+
+    let rows = sqlx::query_as::<_, (String, i64, i64, i16)>(
+        r#"SELECT address, last_checkpointed_time, end_time, mode
            FROM auctions
            WHERE graduated = FALSE
-             AND start_time <= $1
-             AND last_checkpointed_time < end_time"#,
+             AND last_checkpointed_time < end_time
+             AND ((mode = 0 AND start_time <= $1)
+               OR (mode = 1 AND start_time <= $2))"#,
     )
-    .bind(now)
+    .bind(now_secs)
+    .bind(now_slot)
     .fetch_all(db)
     .await?;
 
-    for (auction_addr, last_cp, end_time) in rows {
+    for (auction_addr, last_cp, end_time, mode) in rows {
+        let now = if mode == 1 { now_slot } else { now_secs };
+        let staleness = if mode == 1 {
+            // 1 slot ≈ 0.4s, so convert the staleness budget to slots.
+            (cfg.staleness_secs as f64 / 0.4) as i64
+        } else {
+            cfg.staleness_secs
+        };
         let ended = now >= end_time;
-        if !ended && now - last_cp < cfg.staleness_secs {
+        if !ended && now - last_cp < staleness {
             continue;
         }
 
