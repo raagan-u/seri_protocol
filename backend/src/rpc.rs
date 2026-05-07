@@ -105,6 +105,29 @@ impl RpcClient {
         Ok(out)
     }
 
+    pub async fn get_slot(&self) -> anyhow::Result<u64> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getSlot",
+            "params": [{ "commitment": "confirmed" }]
+        });
+        let resp: RpcResp = self
+            .http
+            .post(&self.url)
+            .json(&body)
+            .send()
+            .await?
+            .json()
+            .await?;
+        if let Some(err) = resp.error {
+            anyhow::bail!("rpc error: {err}");
+        }
+        resp.result
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("missing slot in getSlot response"))
+    }
+
     pub async fn get_latest_blockhash(&self) -> anyhow::Result<String> {
         let body = json!({
             "jsonrpc": "2.0",
@@ -130,6 +153,32 @@ impl RpcClient {
             .and_then(|v| v.as_str().map(str::to_string))
             .ok_or_else(|| anyhow::anyhow!("missing blockhash"))?;
         Ok(bh)
+    }
+
+    /// Forward a base64-encoded signed transaction directly. Use this when
+    /// the caller already has a base64 string (e.g. from a frontend signer)
+    /// so we don't double-encode the bytes.
+    pub async fn send_signed_tx_b64(&self, signed_b64: &str) -> anyhow::Result<String> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "sendTransaction",
+            "params": [signed_b64, { "encoding": "base64", "skipPreflight": false, "preflightCommitment": "processed" }]
+        });
+        let resp: RpcResp = self
+            .http
+            .post(&self.url)
+            .json(&body)
+            .send()
+            .await?
+            .json()
+            .await?;
+        if let Some(err) = resp.error {
+            anyhow::bail!("sendTransaction error: {err}");
+        }
+        resp.result
+            .and_then(|v| v.as_str().map(str::to_string))
+            .ok_or_else(|| anyhow::anyhow!("missing signature in sendTransaction response"))
     }
 
     pub async fn send_transaction(&self, tx_bytes: &[u8]) -> anyhow::Result<String> {

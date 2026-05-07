@@ -62,7 +62,7 @@ async fn build_inner(
     let bid = Pubkey::from_str(bid_addr)?;
 
     let row = sqlx::query(
-        "SELECT token_mint, claim_time, graduated FROM auctions WHERE address = $1",
+        "SELECT token_mint, claim_time, graduated, mode FROM auctions WHERE address = $1",
     )
     .bind(auction_addr)
     .fetch_optional(&s.db)
@@ -70,6 +70,7 @@ async fn build_inner(
     .ok_or_else(|| anyhow::anyhow!("auction not found"))?;
     let token_mint = Pubkey::from_str(&row.get::<String, _>("token_mint"))?;
     let claim_time: i64 = row.get("claim_time");
+    let mode: i16 = row.get("mode");
     let graduated: bool = row.get("graduated");
 
     let bid_row = sqlx::query(
@@ -83,12 +84,17 @@ async fn build_inner(
     let exited_time: i64 = bid_row.get("exited_time");
     let tokens_filled: i64 = bid_row.get("tokens_filled");
 
-    let now = chrono::Utc::now().timestamp();
+    let now: i64 = if mode == 1 {
+        rpc.get_slot().await?.try_into()?
+    } else {
+        chrono::Utc::now().timestamp()
+    };
     anyhow::ensure!(graduated, "auction did not graduate — nothing to claim");
     anyhow::ensure!(
         now >= claim_time,
-        "claim window not open yet (opens at unix {})",
-        claim_time
+        "claim window not open yet (opens at {} {})",
+        claim_time,
+        if mode == 1 { "slot" } else { "unix" }
     );
     anyhow::ensure!(exited_time != 0, "bid not exited yet — call exit first");
     anyhow::ensure!(tokens_filled > 0, "bid filled 0 tokens — nothing to claim");

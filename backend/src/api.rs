@@ -118,7 +118,8 @@ pub async fn get_auction(
                required_currency_raised, tick_spacing, clearing_price,
                next_bid_id, currency_raised_q64_x7, total_cleared_q64_x7,
                graduated, token_name, token_symbol, token_tagline,
-               token_icon_url, description
+               token_icon_url, description,
+               mode, display_start_time, display_end_time, display_claim_time
         FROM auctions WHERE address = $1
         "#,
     )
@@ -145,9 +146,24 @@ pub async fn get_auction(
     let total_supply_raw: i64 = row.get("total_supply");
     let token_decimals: i16 = row.get("token_decimals");
     let currency_decimals: i16 = row.get("currency_decimals");
-    let start_time: i64 = row.get("start_time");
-    let end_time: i64 = row.get("end_time");
-    let claim_time: i64 = row.get("claim_time");
+    let raw_start_time: i64 = row.get("start_time");
+    let raw_end_time: i64 = row.get("end_time");
+    let raw_claim_time: i64 = row.get("claim_time");
+    let mode: i16 = row.get("mode");
+    // In block mode, on-chain *_time fields hold slot numbers, not unix
+    // timestamps — fall back to display columns for status / countdown UX.
+    let (start_time, end_time, claim_time) = if mode == 1 {
+        let ds: Option<i64> = row.get("display_start_time");
+        let de: Option<i64> = row.get("display_end_time");
+        let dc: Option<i64> = row.get("display_claim_time");
+        (
+            ds.unwrap_or(raw_start_time),
+            de.unwrap_or(raw_end_time),
+            dc.unwrap_or(raw_claim_time),
+        )
+    } else {
+        (raw_start_time, raw_end_time, raw_claim_time)
+    };
     let graduated: bool = row.get("graduated");
 
     let currency_raised = q64_x7_to_human_currency(&currency_raised_q64_x7, currency_decimals);
@@ -358,7 +374,7 @@ pub async fn get_user_bids(
         r#"
         SELECT b.address, b.auction, b.bid_id, b.max_price, b.amount_q64,
                b.start_time, b.exited_time, b.tokens_filled,
-               a.clearing_price, a.currency_decimals
+               a.clearing_price, a.currency_decimals, a.token_decimals
         FROM bids b
         LEFT JOIN auctions a ON a.address = b.auction
         WHERE b.owner = $1
@@ -370,48 +386,7 @@ pub async fn get_user_bids(
     .await
     .map_err(internal)?;
 
-    let out = rows
-        .into_iter()
-        .map(|r| {
-            let max_price: String = r.get("max_price");
-            let amount_q64: String = r.get("amount_q64");
-            let exited_time: i64 = r.get("exited_time");
-            let tokens_filled: i64 = r.get("tokens_filled");
-            let clearing: Option<String> = r.get("clearing_price");
-            let currency_decimals: i16 = r.try_get("currency_decimals").unwrap_or(0);
-
-            let mp_f = q64_to_f64(&max_price);
-            let amt_f = amount_q64_to_human(&amount_q64, currency_decimals);
-            let cp_f = clearing.as_deref().map(q64_to_f64).unwrap_or(0.0);
-
-            let status = if exited_time != 0 {
-                "exited"
-            } else if tokens_filled > 0 {
-                "claimed"
-            } else if cp_f > mp_f {
-                "outbid"
-            } else {
-                "active"
-            };
-
-            let est_tokens = if cp_f > 0.0 { (amt_f / cp_f) as i64 } else { 0 };
-
-            BidDto {
-                address: r.get("address"),
-                auction: r.get("auction"),
-                bid_id: r.get("bid_id"),
-                max_price: q64_to_decimal_string(max_price.parse().unwrap_or(0)),
-                amount: format!("{:.2}", amt_f),
-                status: status.to_string(),
-                estimated_tokens: est_tokens,
-                estimated_refund: "0".into(),
-                start_time: r.get("start_time"),
-                exited_time,
-                tokens_filled,
-            }
-        })
-        .collect();
-    Ok(Json(out))
+    Ok(Json(rows.into_iter().map(row_to_bid_dto).collect()))
 }
 
 // --- Error helper ---
@@ -423,6 +398,36 @@ fn internal<E: std::fmt::Display>(e: E) -> StatusCode {
 
 pub async fn health() -> impl IntoResponse {
     Json(serde_json::json!({ "status": "ok" }))
+}
+
+// --- Submit a signed transaction (used by bid / exit / claim flows) ---
+//
+// Frontend signs the tx with Phantom (no network call) then POSTs the
+// base64-encoded signed bytes here. Backend forwards to the configured
+// RPC, returning the signature on success or a 400 with the RPC error
+// (including program logs) on failure. Routing through the backend
+// gives us server-side logging and avoids Phantom's network mismatch.
+
+#[derive(Deserialize)]
+pub struct SubmitTxBody {
+    pub tx: String, // base64-encoded signed legacy Transaction
+}
+
+pub async fn submit_tx(
+    Json(body): Json<SubmitTxBody>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let cfg = crate::config::Config::from_env();
+    let rpc = crate::rpc::RpcClient::new(cfg.rpc_url);
+    match rpc.send_signed_tx_b64(&body.tx).await {
+        Ok(sig) => {
+            tracing::info!("submit_tx OK signature={sig}");
+            Ok(Json(serde_json::json!({ "signature": sig })))
+        }
+        Err(e) => {
+            tracing::warn!("submit_tx failed: {e:#}");
+            Err((axum::http::StatusCode::BAD_REQUEST, format!("{e:#}")))
+        }
+    }
 }
 
 // --- List auctions ---
@@ -444,7 +449,8 @@ pub async fn list_auctions(
                   required_currency_raised, tick_spacing, clearing_price,
                   next_bid_id, currency_raised_q64_x7, total_cleared_q64_x7,
                   graduated, token_name, token_symbol, token_tagline,
-                  token_icon_url, description
+                  token_icon_url, description,
+                  mode, display_start_time, display_end_time, display_claim_time
            FROM auctions"#,
     );
     let mut args: Vec<String> = Vec::new();
@@ -489,9 +495,22 @@ async fn auction_dto_from_row(db: &PgPool, row: &sqlx::postgres::PgRow) -> anyho
     let total_supply_raw: i64 = row.get("total_supply");
     let token_decimals: i16 = row.get("token_decimals");
     let currency_decimals: i16 = row.get("currency_decimals");
-    let start_time: i64 = row.get("start_time");
-    let end_time: i64 = row.get("end_time");
-    let claim_time: i64 = row.get("claim_time");
+    let raw_start_time: i64 = row.get("start_time");
+    let raw_end_time: i64 = row.get("end_time");
+    let raw_claim_time: i64 = row.get("claim_time");
+    let mode: i16 = row.get("mode");
+    let (start_time, end_time, claim_time) = if mode == 1 {
+        let ds: Option<i64> = row.get("display_start_time");
+        let de: Option<i64> = row.get("display_end_time");
+        let dc: Option<i64> = row.get("display_claim_time");
+        (
+            ds.unwrap_or(raw_start_time),
+            de.unwrap_or(raw_end_time),
+            dc.unwrap_or(raw_claim_time),
+        )
+    } else {
+        (raw_start_time, raw_end_time, raw_claim_time)
+    };
     let graduated: bool = row.get("graduated");
 
     let currency_raised = q64_x7_to_human_currency(&currency_raised_q64_x7, currency_decimals);
@@ -545,7 +564,7 @@ pub async fn get_auction_bids(
     let rows = sqlx::query(
         r#"SELECT b.address, b.auction, b.bid_id, b.max_price, b.amount_q64,
                   b.start_time, b.exited_time, b.tokens_filled,
-                  a.clearing_price, a.currency_decimals
+                  a.clearing_price, a.currency_decimals, a.token_decimals
            FROM bids b
            LEFT JOIN auctions a ON a.address = b.auction
            WHERE b.auction = $1
@@ -562,9 +581,10 @@ fn row_to_bid_dto(r: sqlx::postgres::PgRow) -> BidDto {
     let max_price: String = r.get("max_price");
     let amount_q64: String = r.get("amount_q64");
     let exited_time: i64 = r.get("exited_time");
-    let tokens_filled: i64 = r.get("tokens_filled");
+    let tokens_filled_raw: i64 = r.get("tokens_filled");
     let clearing: Option<String> = r.get("clearing_price");
     let currency_decimals: i16 = r.try_get("currency_decimals").unwrap_or(0);
+    let token_decimals: i16 = r.try_get("token_decimals").unwrap_or(0);
 
     let mp_f = q64_to_f64(&max_price);
     let amt_f = amount_q64_to_human(&amount_q64, currency_decimals);
@@ -572,14 +592,18 @@ fn row_to_bid_dto(r: sqlx::postgres::PgRow) -> BidDto {
 
     let status = if exited_time != 0 {
         "exited"
-    } else if tokens_filled > 0 {
+    } else if tokens_filled_raw > 0 {
         "claimed"
     } else if cp_f > mp_f {
         "outbid"
     } else {
         "active"
     };
+    // estimated_tokens is in human units (human currency / human price-per-token).
+    // tokens_filled comes from chain in raw units; scale to human units to match.
     let est_tokens = if cp_f > 0.0 { (amt_f / cp_f) as i64 } else { 0 };
+    let token_scale = 10f64.powi(token_decimals as i32);
+    let tokens_filled = ((tokens_filled_raw as f64) / token_scale) as i64;
 
     BidDto {
         address: r.get("address"),
@@ -650,6 +674,11 @@ pub struct MetadataBody {
     pub token_tagline: Option<String>,
     pub token_icon_url: Option<String>,
     pub description: Option<String>,
+    /// Block-mode only: the wall-clock unix timestamps the user originally
+    /// picked. Used purely for UI display alongside the on-chain slot numbers.
+    pub display_start_time: Option<i64>,
+    pub display_end_time: Option<i64>,
+    pub display_claim_time: Option<i64>,
 }
 
 pub async fn set_metadata(
@@ -664,6 +693,9 @@ pub async fn set_metadata(
               token_tagline  = COALESCE($4, token_tagline),
               token_icon_url = COALESCE($5, token_icon_url),
               description    = COALESCE($6, description),
+              display_start_time = COALESCE($7, display_start_time),
+              display_end_time   = COALESCE($8, display_end_time),
+              display_claim_time = COALESCE($9, display_claim_time),
               updated_at     = NOW()
            WHERE address = $1"#,
     )
@@ -673,6 +705,9 @@ pub async fn set_metadata(
     .bind(body.token_tagline)
     .bind(body.token_icon_url)
     .bind(body.description)
+    .bind(body.display_start_time)
+    .bind(body.display_end_time)
+    .bind(body.display_claim_time)
     .execute(&s.db)
     .await
     .map_err(internal)?;

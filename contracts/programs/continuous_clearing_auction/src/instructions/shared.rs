@@ -5,6 +5,16 @@ use crate::math::constants::*;
 use crate::math::fixed_point::*;
 use crate::state::*;
 
+/// Returns the current "auction time" in the appropriate unit for the auction's mode.
+/// - `mode == 0` (TIME_BASED): `clock.unix_timestamp` (seconds since epoch)
+/// - `mode == 1` (BLOCK_BASED): `clock.slot as i64` (Solana slot number)
+pub fn auction_now(mode: u8, clock: &Clock) -> i64 {
+    match mode {
+        0 => clock.unix_timestamp,
+        _ => clock.slot as i64,
+    }
+}
+
 /// Result of `sell_tokens_at_clearing_price` — all values in raw Q64×x7 scale.
 struct SellResult {
     currency_delta_q64x7: u128,

@@ -138,6 +138,10 @@ export interface BuildInitTxResponse {
   tokenVault: string;
   currencyVault: string;
   creatorTokenAccount: string;
+  // Block-mode only (omitted for time-mode):
+  startSlot?: number;
+  endSlot?: number;
+  claimSlot?: number;
 }
 
 export async function buildInitTx(
@@ -155,12 +159,51 @@ export async function buildInitTx(
   return (await r.json()) as BuildInitTxResponse;
 }
 
+/**
+ * Forwards a signed (base64-encoded) transaction through the backend's
+ * configured RPC. Used by bid/exit/claim flows so the backend logs the
+ * full RPC error (including program logs) and avoids Phantom's
+ * extension-network mismatch.
+ */
+export async function submitSignedTx(signedB64: string): Promise<string> {
+  const r = await fetch(`${API_BASE}/api/submit-tx`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ tx: signedB64 }),
+  });
+  if (!r.ok) {
+    const msg = await r.text().catch(() => "submit-tx failed");
+    throw new Error(msg || `submit-tx failed (${r.status})`);
+  }
+  const j = (await r.json()) as { signature: string };
+  return j.signature;
+}
+
+export async function buildInitBlockTx(
+  payload: CreateAuctionPayload
+): Promise<BuildInitTxResponse> {
+  const r = await fetch(`${API_BASE}/api/auctions-block/build-init-tx`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) {
+    const msg = await r.text().catch(() => "build-init-block-tx failed");
+    throw new Error(msg || `build-init-block-tx failed (${r.status})`);
+  }
+  return (await r.json()) as BuildInitTxResponse;
+}
+
 export interface AuctionMetadataBody {
   token_name?: string;
   token_symbol?: string;
   token_tagline?: string;
   token_icon_url?: string;
   description?: string;
+  /** Block-mode only: original wall-clock unix timestamps for UI display. */
+  display_start_time?: number;
+  display_end_time?: number;
+  display_claim_time?: number;
 }
 
 export async function setAuctionMetadata(

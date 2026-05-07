@@ -9,6 +9,7 @@ import {
   fetchBidBook,
   fetchPriceHistory,
   fetchUserBid,
+  submitSignedTx,
 } from "../api/client";
 import type { MockBidMode } from "../api/mock";
 import { fmt, fmtPrice, shortAddr } from "../format";
@@ -77,7 +78,7 @@ export function AuctionDetail({
   const [bidBook, setBidBook] = useState<BidBookRow[]>([]);
   const [userBid, setUserBid] = useState<Bid | null>(null);
   const [settleBusy, setSettleBusy] = useState(false);
-  const { publicKey, isConnected, signAndSendTransaction } = useWallet();
+  const { publicKey, isConnected, signTransaction } = useWallet();
 
   useEffect(() => {
     let cancelled = false;
@@ -251,7 +252,11 @@ export function AuctionDetail({
                   });
                   const raw = Uint8Array.from(atob(tx), (c) => c.charCodeAt(0));
                   const transaction = Transaction.from(raw);
-                  const { signature } = await signAndSendTransaction(transaction);
+                  const signed = await signTransaction(transaction);
+                  const signedB64 = btoa(
+                    String.fromCharCode(...signed.serialize())
+                  );
+                  const signature = await submitSignedTx(signedB64);
                   // Surface the signature in the form's success message by
                   // re-throwing with a friendly label isn't great — instead,
                   // we rely on the form's default "Bid submitted." success
@@ -278,7 +283,11 @@ export function AuctionDetail({
                     );
                     const raw = Uint8Array.from(atob(tx), (c) => c.charCodeAt(0));
                     const t = Transaction.from(raw);
-                    const { signature } = await signAndSendTransaction(t);
+                    const signed = await signTransaction(t);
+                    const signedB64 = btoa(
+                      String.fromCharCode(...signed.serialize())
+                    );
+                    const signature = await submitSignedTx(signedB64);
                     console.info("exit signature:", signature);
                   } catch (e) {
                     console.error("exit failed:", e);
@@ -298,7 +307,11 @@ export function AuctionDetail({
                     );
                     const raw = Uint8Array.from(atob(tx), (c) => c.charCodeAt(0));
                     const t = Transaction.from(raw);
-                    const { signature } = await signAndSendTransaction(t);
+                    const signed = await signTransaction(t);
+                    const signedB64 = btoa(
+                      String.fromCharCode(...signed.serialize())
+                    );
+                    const signature = await submitSignedTx(signedB64);
                     console.info("claim signature:", signature);
                   } catch (e) {
                     console.error("claim failed:", e);

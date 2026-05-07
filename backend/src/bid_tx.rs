@@ -4,7 +4,7 @@
 //! then returns a base64-encoded legacy Transaction for the frontend to
 //! sign+send via Phantom.
 
-use crate::accounts::{discriminator, pubkey_to_base58, strip_discriminator, TickAccount};
+use crate::accounts::{discriminator, pubkey_to_base58, strip_discriminator, AuctionAccount, TickAccount};
 use crate::api::ApiState;
 use crate::eviction::{load_ticks, plan_eviction};
 use crate::rpc::RpcClient;
@@ -80,9 +80,9 @@ async fn build_inner(
     // --- Load auction from DB ---
     let row = sqlx::query(
         r#"SELECT token_mint, currency_mint, creator, clearing_price, floor_price,
-                  max_bid_price, tick_spacing, next_bid_id, last_checkpointed_time,
+                  max_bid_price, tick_spacing, next_bid_id,
                   sum_currency_demand, next_active_tick_price, total_supply,
-                  token_decimals, currency_decimals
+                  token_decimals, currency_decimals, mode
            FROM auctions WHERE address = $1"#,
     )
     .bind(auction_addr)
@@ -95,12 +95,12 @@ async fn build_inner(
     let max_bid_price: u128 = row.get::<String, _>("max_bid_price").parse()?;
     let tick_spacing: u128 = row.get::<i64, _>("tick_spacing") as u128;
     let next_bid_id: u64 = row.get::<i64, _>("next_bid_id") as u64;
-    let last_checkpointed_time: i64 = row.get("last_checkpointed_time");
     let currency_mint = Pubkey::from_str(&row.get::<String, _>("currency_mint"))?;
     let sum_currency_demand: u128 = row.get::<String, _>("sum_currency_demand").parse()?;
     let next_active_tick_price: u128 = row.get::<String, _>("next_active_tick_price").parse()?;
     let total_supply: u64 = row.get::<i64, _>("total_supply") as u64;
     let token_decimals: u8 = row.get::<i16, _>("token_decimals") as u8;
+    let mode: i16 = row.get("mode");
     let currency_decimals: u8 = row.get::<i16, _>("currency_decimals") as u8;
 
     // --- Validate bid params mirror the on-chain checks (early fail) ---
@@ -160,20 +160,35 @@ async fn build_inner(
     let (prev_tick_price, prev_tick_pda) =
         best.ok_or_else(|| anyhow::anyhow!("no prev_tick found; auction not initialized?"))?;
 
-    // --- Find latest_checkpoint (highest timestamp for this auction) ---
-    let latest_cp_addr: String = sqlx::query_scalar(
-        "SELECT address FROM checkpoints WHERE auction = $1 ORDER BY timestamp DESC LIMIT 1",
-    )
-    .bind(auction_addr)
-    .fetch_optional(&s.db)
-    .await?
-    .ok_or_else(|| anyhow::anyhow!("no checkpoints indexed yet; try again shortly"))?;
-    let latest_checkpoint = Pubkey::from_str(&latest_cp_addr)?;
-
-    // Ensure `now > last_checkpointed_time` so new_checkpoint PDA != latest_checkpoint PDA.
-    let mut now = chrono::Utc::now().timestamp();
-    if now <= last_checkpointed_time {
-        now = last_checkpointed_time + 1;
+    // Derive latest_checkpoint from on-chain auction state. The DB-indexed view
+    // can lag the chain (e.g., a crank tx between the indexer poll and this
+    // build), and the on-chain submit_bid enforces
+    // `latest_checkpoint.next_timestamp == MAX_TIMESTAMP` — a stale "latest" cp
+    // whose successor was just written triggers ConstraintRaw (0x7d3).
+    let raw = rpc
+        .get_account(auction_addr)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("auction account not found on-chain"))?;
+    anyhow::ensure!(raw.len() > 8, "auction account data too short");
+    let auction_acc: AuctionAccount = borsh::from_slice(&raw[8..])?;
+    let onchain_last_checkpointed_time = auction_acc.last_checkpointed_time;
+    let (latest_checkpoint, _) = Pubkey::find_program_address(
+        &[
+            b"checkpoint",
+            auction.as_ref(),
+            &onchain_last_checkpointed_time.to_le_bytes(),
+        ],
+        &program_id,
+    );
+    // `now` must match the program's `auction_now()` semantics: unix
+    // timestamp in time mode, slot number in block mode.
+    let mut now: i64 = if mode == 1 {
+        rpc.get_slot().await?.try_into()?
+    } else {
+        chrono::Utc::now().timestamp()
+    };
+    if now <= onchain_last_checkpointed_time {
+        now = onchain_last_checkpointed_time + 1;
     }
     let (new_checkpoint_pda, _) = Pubkey::find_program_address(
         &[b"checkpoint", auction.as_ref(), &now.to_le_bytes()],

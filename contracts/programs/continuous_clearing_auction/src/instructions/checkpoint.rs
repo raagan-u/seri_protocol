@@ -5,7 +5,7 @@ use crate::math::constants::*;
 use crate::state::*;
 use crate::state::checkpoint::Checkpoint as CheckpointState;
 
-use super::shared::checkpoint_at_time;
+use super::shared::{auction_now, checkpoint_at_time};
 
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct CheckpointParams {
@@ -60,7 +60,7 @@ pub fn handle_checkpoint<'info>(
     let auction = &ctx.accounts.auction;
 
     require!(
-        now >= auction.last_checkpointed_time && now <= clock.unix_timestamp,
+        now >= auction.last_checkpointed_time && now <= auction_now(auction.mode, &clock),
         CCAError::InvalidCheckpointHint
     );
 

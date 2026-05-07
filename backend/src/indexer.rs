@@ -76,7 +76,17 @@ async fn tick(
         let parsed = match AuctionAccount::try_from_slice(body) {
             Ok(a) => a,
             Err(e) => {
-                warn!("failed to decode Auction {}: {e}", acc.pubkey);
+                let msg = format!("{e}");
+                // Old auctions created before the `mode` byte was added to
+                // the Auction layout will fail here with a bool / size error.
+                // They're abandoned by the schema upgrade — log quietly.
+                if msg.contains("Invalid bool representation")
+                    || msg.contains("Unexpected length of input")
+                {
+                    tracing::debug!("skipping legacy Auction {} ({msg})", acc.pubkey);
+                } else {
+                    warn!("failed to decode Auction {}: {msg}", acc.pubkey);
+                }
                 continue;
             }
         };
@@ -256,7 +266,7 @@ async fn upsert_auction(db: &PgPool, address: &str, a: &AuctionAccount) -> anyho
             required_currency_raised, tick_spacing, clearing_price,
             sum_currency_demand, next_bid_id, last_checkpointed_time,
             currency_raised_q64_x7, total_cleared_q64_x7, graduated,
-            next_active_tick_price, updated_at
+            next_active_tick_price, mode, updated_at
         ) VALUES (
             $1,$2,$3,$4,$5,
             $6,$7,
@@ -264,7 +274,7 @@ async fn upsert_auction(db: &PgPool, address: &str, a: &AuctionAccount) -> anyho
             $13,$14,$15,
             $16,$17,$18,
             $19,$20,$21,
-            $22, NOW()
+            $22,$23, NOW()
         )
         ON CONFLICT (address) DO UPDATE SET
             token_decimals = EXCLUDED.token_decimals,
@@ -285,6 +295,7 @@ async fn upsert_auction(db: &PgPool, address: &str, a: &AuctionAccount) -> anyho
             total_cleared_q64_x7 = EXCLUDED.total_cleared_q64_x7,
             graduated = EXCLUDED.graduated,
             next_active_tick_price = EXCLUDED.next_active_tick_price,
+            mode = EXCLUDED.mode,
             updated_at = NOW()
         "#,
     )
@@ -310,6 +321,7 @@ async fn upsert_auction(db: &PgPool, address: &str, a: &AuctionAccount) -> anyho
     .bind(a.total_cleared_q64_x7.to_string())
     .bind(a.graduated)
     .bind(a.next_active_tick_price.to_string())
+    .bind(a.mode as i16)
     .execute(db)
     .await?;
     Ok(())

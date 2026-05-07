@@ -5,7 +5,7 @@ use crate::errors::CCAError;
 use crate::math::constants::*;
 use crate::state::*;
 
-use super::shared::checkpoint_at_time;
+use super::shared::{auction_now, checkpoint_at_time};
 
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct SubmitBidParams {
@@ -102,9 +102,9 @@ pub fn handle_submit_bid<'info>(
     let program_id = *ctx.program_id;
     let auction = &mut ctx.accounts.auction;
 
-    // params.now must be in [last_checkpointed_time, clock.unix_timestamp]
+    // params.now must be in [last_checkpointed_time, auction_now()]
     require!(
-        now >= auction.last_checkpointed_time && now <= clock.unix_timestamp,
+        now >= auction.last_checkpointed_time && now <= auction_now(auction.mode, &clock),
         CCAError::InvalidCheckpointHint
     );
     require!(now >= auction.start_time, CCAError::AuctionNotStarted);
