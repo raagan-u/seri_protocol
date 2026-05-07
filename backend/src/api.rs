@@ -374,7 +374,7 @@ pub async fn get_user_bids(
         r#"
         SELECT b.address, b.auction, b.bid_id, b.max_price, b.amount_q64,
                b.start_time, b.exited_time, b.tokens_filled,
-               a.clearing_price, a.currency_decimals
+               a.clearing_price, a.currency_decimals, a.token_decimals
         FROM bids b
         LEFT JOIN auctions a ON a.address = b.auction
         WHERE b.owner = $1
@@ -386,48 +386,7 @@ pub async fn get_user_bids(
     .await
     .map_err(internal)?;
 
-    let out = rows
-        .into_iter()
-        .map(|r| {
-            let max_price: String = r.get("max_price");
-            let amount_q64: String = r.get("amount_q64");
-            let exited_time: i64 = r.get("exited_time");
-            let tokens_filled: i64 = r.get("tokens_filled");
-            let clearing: Option<String> = r.get("clearing_price");
-            let currency_decimals: i16 = r.try_get("currency_decimals").unwrap_or(0);
-
-            let mp_f = q64_to_f64(&max_price);
-            let amt_f = amount_q64_to_human(&amount_q64, currency_decimals);
-            let cp_f = clearing.as_deref().map(q64_to_f64).unwrap_or(0.0);
-
-            let status = if exited_time != 0 {
-                "exited"
-            } else if tokens_filled > 0 {
-                "claimed"
-            } else if cp_f > mp_f {
-                "outbid"
-            } else {
-                "active"
-            };
-
-            let est_tokens = if cp_f > 0.0 { (amt_f / cp_f) as i64 } else { 0 };
-
-            BidDto {
-                address: r.get("address"),
-                auction: r.get("auction"),
-                bid_id: r.get("bid_id"),
-                max_price: q64_to_decimal_string(max_price.parse().unwrap_or(0)),
-                amount: format!("{:.2}", amt_f),
-                status: status.to_string(),
-                estimated_tokens: est_tokens,
-                estimated_refund: "0".into(),
-                start_time: r.get("start_time"),
-                exited_time,
-                tokens_filled,
-            }
-        })
-        .collect();
-    Ok(Json(out))
+    Ok(Json(rows.into_iter().map(row_to_bid_dto).collect()))
 }
 
 // --- Error helper ---
@@ -605,7 +564,7 @@ pub async fn get_auction_bids(
     let rows = sqlx::query(
         r#"SELECT b.address, b.auction, b.bid_id, b.max_price, b.amount_q64,
                   b.start_time, b.exited_time, b.tokens_filled,
-                  a.clearing_price, a.currency_decimals
+                  a.clearing_price, a.currency_decimals, a.token_decimals
            FROM bids b
            LEFT JOIN auctions a ON a.address = b.auction
            WHERE b.auction = $1
@@ -622,9 +581,10 @@ fn row_to_bid_dto(r: sqlx::postgres::PgRow) -> BidDto {
     let max_price: String = r.get("max_price");
     let amount_q64: String = r.get("amount_q64");
     let exited_time: i64 = r.get("exited_time");
-    let tokens_filled: i64 = r.get("tokens_filled");
+    let tokens_filled_raw: i64 = r.get("tokens_filled");
     let clearing: Option<String> = r.get("clearing_price");
     let currency_decimals: i16 = r.try_get("currency_decimals").unwrap_or(0);
+    let token_decimals: i16 = r.try_get("token_decimals").unwrap_or(0);
 
     let mp_f = q64_to_f64(&max_price);
     let amt_f = amount_q64_to_human(&amount_q64, currency_decimals);
@@ -632,14 +592,18 @@ fn row_to_bid_dto(r: sqlx::postgres::PgRow) -> BidDto {
 
     let status = if exited_time != 0 {
         "exited"
-    } else if tokens_filled > 0 {
+    } else if tokens_filled_raw > 0 {
         "claimed"
     } else if cp_f > mp_f {
         "outbid"
     } else {
         "active"
     };
+    // estimated_tokens is in human units (human currency / human price-per-token).
+    // tokens_filled comes from chain in raw units; scale to human units to match.
     let est_tokens = if cp_f > 0.0 { (amt_f / cp_f) as i64 } else { 0 };
+    let token_scale = 10f64.powi(token_decimals as i32);
+    let tokens_filled = ((tokens_filled_raw as f64) / token_scale) as i64;
 
     BidDto {
         address: r.get("address"),
